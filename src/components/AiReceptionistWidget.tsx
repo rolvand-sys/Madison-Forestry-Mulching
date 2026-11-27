@@ -135,18 +135,34 @@ function parseAssistantOutput(rawText: string): {
   };
 }
 
-function detectSpanishReply(text: string, fallbackLang: 'en' | 'es'): 'en-US' | 'es-US' {
+function normalizeAsciiText(text: string): string {
+  return text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
+function detectSpanishReply(
+  text: string,
+  fallbackLang: 'en' | 'es',
+  activeConvLang?: 'en' | 'es'
+): 'en-US' | 'es-US' {
   if (/[áéíóúñ¿¡]/i.test(text)) return 'es-US';
-  if (
-    /\b(hola|terreno|limpieza|limpiar|necesito|propiedad|reserva|agendar|cita|evaluacion|horario|horarios|donde|como|cuanto|trituracion|precio|precios|visita|palma|maleza|gracias|buenos|buenas|para|una|con|que)\b/i.test(
-      text
-    )
-  ) {
-    return 'es-US';
-  }
-  if (/\b(hello|clearing|mulching|acre|estimate|palmetto|schedule|visit|thanks|how|where|price|book)\b/i.test(text)) {
-    return 'en-US';
-  }
+
+  const norm = normalizeAsciiText(text);
+  const esMatches =
+    norm.match(
+      /\b(hola|buen|buenos|buenas|dias|tardes|noches|que|tal|si|claro|gracias|muchas|por|favor|perdon|disculpa|el|la|los|las|un|una|unos|unas|de|del|en|para|con|mi|tu|su|es|son|esta|estoy|tengo|quiero|necesito|puedo|podemos|cuando|donde|como|cuanto|cuesta|precio|precios|cotiz\w*|estimad\w*|terreno|propiedad|lote|finca|limpiar|limpieza|desmont\w*|tritura\w*|maleza|palma|tocones|arbol\w*|camino|entrada|cerca|tormenta|huracan|lunes|martes|miercoles|jueves|viernes|sabado|domingo|manana|tarde|hoy|ahora|luego|cita|reserva\w*|agend\w*|evalua\w*|visita|fecha|fechas|horario|horarios|disponib\w*|numero|telefono|tel|cel|celular|direccion|nombre|llamo|soy|vivo|calle|ciudad|zona|listo|perfecto|genial|excelente)\b/g
+    )?.length ?? 0;
+
+  const enMatches =
+    norm.match(
+      /\b(hello|hi|hey|good|morning|afternoon|clearing|mulching|brush|stump|estimate|quote|price|cost|book|schedule|appoint\w*|visit|date|time|today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|my|name|phone|number|address|adress|property|lot|thanks|thank|please|yes|sure|great|where|when|how|what)\b/g
+    )?.length ?? 0;
+
+  if (esMatches > enMatches) return 'es-US';
+  if (enMatches > esMatches) return 'en-US';
+  if (activeConvLang) return activeConvLang === 'es' ? 'es-US' : 'en-US';
   return fallbackLang === 'es' ? 'es-US' : 'en-US';
 }
 
@@ -155,10 +171,12 @@ function waitChatPause(ms: number): Promise<void> {
 }
 
 function calcTypingDelayMs(bubbleText: string, isFirstBubble: boolean): number {
-  const base = isFirstBubble ? 850 : 700;
-  const perChar = Math.min(850, bubbleText.length * 10);
+  const base = isFirstBubble ? 1150 : 1050;
+  const perChar = Math.min(650, bubbleText.length * 8);
   return base + perChar;
 }
+
+const INTER_BUBBLE_BEAT_MS = 380;
 
 function splitIntoChatBubbles(rawText: string): string[] {
   const clean = rawText.trim();
@@ -192,6 +210,14 @@ interface BookingDraftState {
   propertyAddress?: string;
   lotSize?: string;
   awaitingField?: 'date_time' | 'name' | 'phone' | 'address' | 'lotSize' | 'details';
+  activeLang?: 'en' | 'es';
+  lastBooked?: {
+    id: string;
+    dateHumanEs: string;
+    dateHumanEn: string;
+    slotHuman: string;
+    clientName: string;
+  };
 }
 
 function formatSlotShort(slotId: string): string {
@@ -217,6 +243,116 @@ function extractAcresLabel(q: string): string | undefined {
   return undefined;
 }
 
+const NON_NAME_TOKENS = new Set([
+  'si',
+  'no',
+  'ok',
+  'okay',
+  'vale',
+  'claro',
+  'bueno',
+  'perfecto',
+  'excelente',
+  'genial',
+  'super',
+  'dale',
+  'listo',
+  'gracias',
+  'muchas',
+  'hola',
+  'hi',
+  'hello',
+  'hey',
+  'quiero',
+  'necesito',
+  'puedo',
+  'podemos',
+  'quisiera',
+  'gustaria',
+  'agendar',
+  'reservar',
+  'programar',
+  'apartar',
+  'cita',
+  'visita',
+  'evaluacion',
+  'terreno',
+  'propiedad',
+  'lote',
+  'finca',
+  'acre',
+  'acres',
+  'cuando',
+  'donde',
+  'como',
+  'cuanto',
+  'horario',
+  'horarios',
+  'fecha',
+  'fechas',
+  'disponible',
+  'disponibles',
+  'lunes',
+  'martes',
+  'miercoles',
+  'jueves',
+  'viernes',
+  'sabado',
+  'domingo',
+  'monday',
+  'tuesday',
+  'wednesday',
+  'thursday',
+  'friday',
+  'saturday',
+  'sunday',
+  'manana',
+  'tomorrow',
+  'tarde',
+  'morning',
+  'afternoon',
+  'book',
+  'schedule',
+  'visit',
+  'yes',
+  'sure',
+  'please',
+  'por',
+  'favor',
+  'para',
+  'una',
+  'uno',
+  'con',
+  'mi',
+  'tu',
+  'su',
+  'telefono',
+  'phone',
+  'numero',
+  'number',
+  'direccion',
+  'address',
+  'adress',
+  'y',
+  'and',
+  'es',
+  'is',
+  'my',
+  'el',
+  'la',
+  'las',
+  'los',
+  'de',
+  'del',
+  'en',
+  'que',
+  'esta',
+  'bien',
+  'thanks',
+  'thank',
+  'you',
+]);
+
 function resolveOfflineJessicaResponse(
   userText: string,
   cms: SiteCmsData,
@@ -229,8 +365,9 @@ function resolveOfflineJessicaResponse(
   bookedAppointment?: Appointment;
 } {
   const raw = userText.trim();
-  const q = raw.toLowerCase();
-  const isEs = detectSpanishReply(raw, fallbackLang) === 'es-US';
+  const q = normalizeAsciiText(raw);
+  const detectedLang = detectSpanishReply(raw, fallbackLang, draft.activeLang) === 'es-US' ? 'es' : 'en';
+  const isEs = detectedLang === 'es';
   const biz = cms.business;
   const pricing = cms.pricing;
   const discountPct = Math.round(pricing.bulkDiscountRate * 100);
@@ -238,12 +375,13 @@ function resolveOfflineJessicaResponse(
   const detectedLot = extractAcresLabel(q);
   const workingDraft: BookingDraftState = {
     ...draft,
+    activeLang: detectedLang,
     lotSize: detectedLot ?? draft.lotSize,
   };
 
   const isCancelBooking =
     workingDraft.active &&
-    /\b(cancelar\s+reserva|cancel\s+booking|no\s+quiero\s+agendar|olv[ií]dalo|mejor\s+luego)\b/i.test(
+    /\b(cancelar\s+reserva|cancel\s+booking|no\s+quiero\s+agendar|olvidalo|mejor\s+luego)\b/i.test(
       q
     );
   if (isCancelBooking) {
@@ -251,32 +389,37 @@ function resolveOfflineJessicaResponse(
       bubbles: isEs
         ? ['Sin problema, cancelamos el borrador de la cita. Aquí sigo por si necesitas precios o información.']
         : ['No problem—cancelled the booking draft. Let me know if you need pricing or anything else!'],
-      nextDraft: { active: false, lotSize: workingDraft.lotSize },
+      nextDraft: { active: false, lotSize: workingDraft.lotSize, activeLang: detectedLang },
     };
   }
 
   const isPureGreeting =
-    /^(hola|hi|hello|hey|buenos d[ií]as|buenas tardes|buenas noches|good morning|good afternoon|qu[eé] tal)[!.\s]*$/i.test(
+    /^(hola|hi|hello|hey|buenos dias|buenas tardes|buenas noches|good morning|good afternoon|que tal)[!.,\s]*$/i.test(
+      q
+    );
+
+  const isThankYouOrAck =
+    /^(?:muchas\s+)?(?:gracias|thank\s+you|thanks|ty|ok\s*gracias|vale\s*gracias|listo\s*gracias|perfecto|excelente|genial|super|muy\s+bien|entendido|ok|okay|vale|nos\s+vemos|adios|hasta\s+luego|bye|sounds\s+good|got\s+it|awesome|great)[!.,\s]*$/i.test(
       q
     );
 
   const asksSchedule =
-    /(book|schedul|visit|date|calendar|reserv|appoint|walk[\s-]*through|evalua|agend|cita|visita|fecha|calendario|programar|apartar|disponib|horarios?\s+libres|d[ií]as?\s+libres)/i.test(
+    /(book|schedul|visit|date|calendar|reserv|appoint|walk[\s-]*through|evalua|agend|cita|visita|fecha|calendario|programar|apartar|disponib|horarios?\s+libres|dias?\s+libres|cuando\s+puede)/i.test(
       q
     );
 
   const asksPrice =
-    /(price|cost|quote|estimat|how much|cu[aá]nto|precio|cotiz|estimar|descuento|limpiar\s+mi|desmont)/i.test(
+    /(price|cost|quote|estimat|how much|cuanto|precio|cotiz|estimar|descuento|limpiar\s+mi|desmont)/i.test(
       q
     ) || (!workingDraft.active && /\b(acre|acres|palmetto|palma|maleza)\b/i.test(q));
 
   const asksEquipmentOrServices =
-    /(service|servicio|equip|machine|skid|asv|baumalight|m[aá]quina|storm|hurricane|tormenta|hurac[aá]n|cerca|fence|camino|trail|grind|rebaj|toc[oó]n)/i.test(
+    /(service|servicio|equip|machine|skid|asv|baumalight|maquina|storm|hurricane|tormenta|huracan|cerca|fence|camino|trail|grind|rebaj|tocon)/i.test(
       q
     );
 
   const asksHoursOrAddress =
-    /(hour|open|close|address|where|location|map|phone|call|horario|hora|abre|cierra|direcci[oó]n|ubicaci[oó]n|tel[eé]fono|llamar|zona|ciudad|area|serve|cubr|donde|d[oó]nde)/i.test(
+    /(hour|open|close|address|where|location|map|phone|call|horario|hora|abre|cierra|direccion|ubicacion|telefono|llamar|zona|ciudad|area|serve|cubr|donde)/i.test(
       q
     );
 
@@ -347,9 +490,42 @@ function resolveOfflineJessicaResponse(
 
   const hasBookingSignals = Boolean(parsedDate || parsedSlot || weekendRequested);
 
-  // Handle pure non-booking questions when NOT inside an active booking flow (unless user explicitly switched topic)
+  // Handle pure non-booking questions when NOT inside an active booking flow
   if (!workingDraft.active && !asksSchedule && !hasBookingSignals) {
+    if (isThankYouOrAck) {
+      if (workingDraft.lastBooked) {
+        const b = workingDraft.lastBooked;
+        return {
+          bubbles: isEs
+            ? [
+                `¡Con mucho gusto, ${b.clientName}! Tu visita para el ${b.dateHumanEs} a las ${b.slotHuman} ya quedó registrada (Ref: ${b.id}).`,
+                `Si necesitas cambiar algo o tienes otra duda, aquí estoy o llámanos al ${biz.phone}. ¡Excelente día!`,
+              ]
+            : [
+                `You're very welcome, ${b.clientName}! Your evaluation on ${b.dateHumanEn} at ${b.slotHuman} is all saved (Ref: ${b.id}).`,
+                `Let me know if you need any changes or call us at ${biz.phone}. Have a great day!`,
+              ],
+          nextDraft: workingDraft,
+        };
+      }
+
+      return {
+        bubbles: isEs
+          ? [`¡Con mucho gusto! Aquí sigo por si quieres revisar fechas libres para una evaluación gratis o tienes otra pregunta.`]
+          : [`You're welcome! I'm right here if you'd like to check open dates for a free site walk or have another question.`],
+        nextDraft: workingDraft,
+      };
+    }
+
     if (isPureGreeting) {
+      if (!isFirstTurn) {
+        return {
+          bubbles: isEs
+            ? [`¡Hola de nuevo! ¿En qué más te puedo ayudar hoy?`]
+            : [`Hi again! What else can I help you with today?`],
+          nextDraft: workingDraft,
+        };
+      }
       return {
         bubbles: isEs
           ? [
@@ -592,68 +768,125 @@ function resolveOfflineJessicaResponse(
     }
   }
 
-  // Extract explicit name / address OR structured segments
-  const explicitNameMatch = raw.match(
-    /(?:me\s+llamo|mi\s+nombre\s+es|nombre\s*:|soy|my\s+name\s+is|i['’]?m|name\s*:)\s*([A-Za-zÁÉÍÓÚÑáéíóúñ'\s]{2,45}?)(?=[,.;\n]|$|\b(?:tel|tel[eé]fono|phone|mi\s+tel|y\s+vivo|en\s+\d|direcci[oó]n|address)\b)/i
+  // Strip phone labels & numbers cleanly before inspecting name / address
+  const cleanContactText = raw
+    .replace(/\b\d{4}-\d{2}-\d{2}\b/g, ' ')
+    .replace(
+      /(?:(?:mi|my)\s+)?(?:tel[eé]fono|phone(?:\s+number)?|cel(?:ular)?|n[uú]mero)(?:\s+(?:es|is|:))?\s*(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/gi,
+      ' '
+    )
+    .replace(/(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g, ' ')
+    .replace(/^\s*(?:y|and)\s+/i, '')
+    .trim();
+
+  // Extract explicit name
+  const explicitNameMatch = cleanContactText.match(
+    /(?:me\s+llamo|mi\s+nombre\s+es|a\s+nombre\s+de|nombre\s*(?:es|:)|soy|my\s+name\s+is|i['’]?m|name\s*(?:is|:))\s*([A-Za-zÁÉÍÓÚÑáéíóúñ'\s]{2,45}?)(?=[,.;\n]|$|\b(?:y\s+|and\s+)?(?:mi\s+|my\s+)?(?:tel|tel[eé]fono|phone|vivo|en\s+\d|direcci[oó]n|add?ress)\b)/i
   );
   if (explicitNameMatch?.[1]) {
-    workingDraft.clientName = explicitNameMatch[1].trim();
+    const candidate = explicitNameMatch[1].trim();
+    const candidateTokens = normalizeAsciiText(candidate).split(/\s+/).filter(Boolean);
+    if (
+      candidateTokens.length >= 1 &&
+      candidateTokens.length <= 4 &&
+      !candidateTokens.every((t) => NON_NAME_TOKENS.has(t))
+    ) {
+      workingDraft.clientName = candidate;
+    }
   }
 
-  const explicitAddrMatch = raw.match(
-    /(?:direcci[oó]n\s*:|address\s*:|ubicaci[oó]n\s*:|parcela\s*:|terreno\s+en\s+|propiedad\s+en\s+|vivo\s+en\s+)\s*([^\n;]{4,80})/i
+  // Extract explicit address (keeping "Street, City, ST ZIP" intact)
+  const explicitAddrMatch = cleanContactText.match(
+    /(?:(?:mi\s+)?direcci[oó]n(?:\s+es|\s*:)|(?:my\s+)?add?ress(?:\s+is|\s*:)|ubicaci[oó]n(?:\s+es|\s*:)|parcela(?:\s+es|\s*:)|terreno\s+en|propiedad\s+en|vivo\s+en)\s*([^\n;|]{4,110})/i
   );
   if (explicitAddrMatch?.[1]) {
     const cleanedAddr = explicitAddrMatch[1]
-      .replace(/(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g, '')
-      .replace(/,\s*$/g, '')
+      .replace(
+        /(?:\s+(?:y|and))?\s*(?:(?:mi|my)\s+)?(?:nombre|name|tel[eé]fono|phone|acres?)(?:\s+(?:es|is|:)).*$/i,
+        ''
+      )
+      .replace(/^[,\s:.-]+|[,\s;.-]+$/g, '')
       .trim();
-    if (cleanedAddr.length >= 3) {
+    if (cleanedAddr.length >= 4) {
       workingDraft.propertyAddress = cleanedAddr;
     }
   }
 
-  // Comma / newline split fallback when user gives "Nombre, Teléfono, Dirección, Acres"
-  const strippedForParts = raw
-    .replace(/\b\d{4}-\d{2}-\d{2}\b/g, '')
-    .replace(/(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g, '')
-    .replace(/\b\d+(?:\.\d+)?\s*(?:acres?|ac\b)/gi, '')
-    .replace(/\b(?:a\s+las?|at)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)?/gi, '')
-    .replace(/\b\d{1,2}:\d{2}\s*(?:am|pm|a\.m\.|p\.m\.)?/gi, '')
-    .replace(/\b(?:lunes|martes|mi[eé]rcoles|miercoles|jueves|viernes|monday|tuesday|wednesday|thursday|friday|ma[ñn]ana|tomorrow)\b/gi, '');
-
-  const chunks = strippedForParts
-    .split(/[,;\n|]+/)
-    .map((c) => c.trim())
-    .filter((c) => c.length >= 2);
-
   const looksLikeAddress = (s: string) =>
     /\d+\s+[A-Za-z]/.test(s) ||
     /\b(rd|road|st|street|ave|avenue|ln|lane|dr|drive|hwy|blvd|ct|way|calle|av|camino|parcel|lot|madison|quitman|perry|monticello|live\s+oak|valdosta|lee|greenville|jasper|fl|ga)\b/i.test(
-      s
+      normalizeAsciiText(s)
     );
 
-  const looksLikePersonName = (s: string) =>
-    !/\d/.test(s) &&
-    !looksLikeAddress(s) &&
-    !/\b(quiero|agendar|cita|visita|evaluaci[oó]n|horario|reservar|book|schedule|visit|yes|si|sí|ok|claro|gracias|hola)\b/i.test(
-      s
-    ) &&
-    s.split(/\s+/).length <= 4;
+  const looksLikePersonName = (s: string) => {
+    const trimmed = s.trim();
+    if (!trimmed || /\d/.test(trimmed) || looksLikeAddress(trimmed)) return false;
+    const normTokens = normalizeAsciiText(trimmed)
+      .replace(/[^a-z\s']/g, ' ')
+      .split(/\s+/)
+      .filter(Boolean);
+    if (normTokens.length === 0 || normTokens.length > 4) return false;
+    if (normTokens.some((t) => NON_NAME_TOKENS.has(t))) return false;
+    return normTokens.every((t) => t.length >= 2);
+  };
 
-  for (const chunk of chunks) {
-    if (!workingDraft.propertyAddress && looksLikeAddress(chunk)) {
-      workingDraft.propertyAddress = chunk;
-    } else if (!workingDraft.clientName && looksLikePersonName(chunk)) {
-      workingDraft.clientName = chunk;
+  // Fallback address/name from clean segments when not explicitly labeled
+  if (!workingDraft.propertyAddress || !workingDraft.clientName) {
+    const strippedForParts = cleanContactText
+      .replace(
+        /(?:(?:mi\s+)?direcci[oó]n(?:\s+es|\s*:)|(?:my\s+)?add?ress(?:\s+is|\s*:)|ubicaci[oó]n(?:\s+es|\s*:)|parcela(?:\s+es|\s*:))\s*[^\n;|]*/gi,
+        ''
+      )
+      .replace(/\b\d+(?:\.\d+)?\s*(?:acres?|ac\b)/gi, '')
+      .replace(/\b(?:a\s+las?|at)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)?/gi, '')
+      .replace(/\b\d{1,2}:\d{2}\s*(?:am|pm|a\.m\.|p\.m\.)?/gi, '')
+      .replace(
+        /\b(?:lunes|martes|miercoles|jueves|viernes|monday|tuesday|wednesday|thursday|friday|manana|tomorrow)\b/gi,
+        ''
+      );
+
+    // If the whole remaining phrase looks like "1828 Pullman Rd, Madison, FL 32349", preserve it as one address
+    if (!workingDraft.propertyAddress && /\d+\s+[A-Za-z].*,/.test(cleanContactText)) {
+      const candidateAddr = cleanContactText
+        .replace(/^(?:y|and)\s+/i, '')
+        .replace(/[,\s;.-]+$/g, '')
+        .trim();
+      if (looksLikeAddress(candidateAddr)) {
+        workingDraft.propertyAddress = candidateAddr;
+      }
     }
-  }
 
-  // Contextual single-field answer if Jessica specifically asked for one item
-  if (workingDraft.awaitingField === 'name' && !workingDraft.clientName && chunks[0]) {
-    workingDraft.clientName = chunks[0];
-  } else if (workingDraft.awaitingField === 'address' && !workingDraft.propertyAddress && raw.length >= 4) {
-    workingDraft.propertyAddress = raw;
+    const chunks = strippedForParts
+      .split(/[,;\n|]+/)
+      .map((c) => c.trim())
+      .filter((c) => c.length >= 2);
+
+    const allowNameGuess =
+      workingDraft.awaitingField === 'name' ||
+      (!asksSchedule && Boolean(workingDraft.date && workingDraft.timeSlot));
+
+    for (const chunk of chunks) {
+      if (!workingDraft.propertyAddress && looksLikeAddress(chunk)) {
+        workingDraft.propertyAddress = chunk;
+      } else if (!workingDraft.clientName && allowNameGuess && looksLikePersonName(chunk)) {
+        workingDraft.clientName = chunk;
+      }
+    }
+
+    if (
+      workingDraft.awaitingField === 'name' &&
+      !workingDraft.clientName &&
+      chunks[0] &&
+      looksLikePersonName(chunks[0])
+    ) {
+      workingDraft.clientName = chunks[0];
+    } else if (
+      workingDraft.awaitingField === 'address' &&
+      !workingDraft.propertyAddress &&
+      cleanContactText.length >= 4
+    ) {
+      workingDraft.propertyAddress = cleanContactText;
+    }
   }
 
   // Step 1: If just asked to schedule without choosing date yet, show REAL availability from the calendar!
@@ -790,7 +1023,17 @@ function resolveOfflineJessicaResponse(
           `All set, ${created.appointment.clientName}! Your evaluation is saved in our live agenda (Ref: ${created.appointment.id}) for ${biz.ownerName} to confirm.`,
           `You can download your .ics reminder or add it to Google Calendar below.`,
         ],
-    nextDraft: { active: false },
+    nextDraft: {
+      active: false,
+      activeLang: detectedLang,
+      lastBooked: {
+        id: created.appointment.id,
+        dateHumanEs: formatDateHuman(created.appointment.date, 'es'),
+        dateHumanEn: formatDateHuman(created.appointment.date, 'en'),
+        slotHuman: formatSlotShort(created.appointment.timeSlot),
+        clientName: created.appointment.clientName,
+      },
+    },
     bookedAppointment: created.appointment,
   };
 }
@@ -976,6 +1219,10 @@ export function AiReceptionistWidget() {
   ) => {
     for (let i = 0; i < bubbles.length; i++) {
       if (chatSessionRef.current !== sessionId) return;
+      if (i > 0) {
+        await waitChatPause(INTER_BUBBLE_BEAT_MS);
+        if (chatSessionRef.current !== sessionId) return;
+      }
       setIsTyping(true);
       await waitChatPause(calcTypingDelayMs(bubbles[i], i === 0));
       if (chatSessionRef.current !== sessionId) return;
@@ -1199,6 +1446,8 @@ export function AiReceptionistWidget() {
       }
 
       for (let i = 1; i < bubbles.length; i++) {
+        if (chatSessionRef.current !== sessionId) return;
+        await waitChatPause(INTER_BUBBLE_BEAT_MS);
         if (chatSessionRef.current !== sessionId) return;
         setIsTyping(true);
         await waitChatPause(calcTypingDelayMs(bubbles[i], false));
