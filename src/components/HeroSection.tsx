@@ -3,6 +3,7 @@ import { CheckCircle2, MapPin, Phone, ShieldCheck, Star } from 'lucide-react';
 import { useLanguage } from '../context/LanguageContext';
 import { useCallModal } from '../context/CallContext';
 import { useCms } from '../context/CmsContext';
+import { resolveAssetUrl } from '../utils/assetUrl';
 
 interface HeroSectionProps {
   selectedServiceId?: string;
@@ -77,7 +78,7 @@ export function HeroSection({ selectedServiceId }: HeroSectionProps) {
       <div className="absolute inset-0 pointer-events-none">
         {!heroImgFailed && biz.heroImageUrl ? (
           <img
-            src={biz.heroImageUrl}
+            src={resolveAssetUrl(biz.heroImageUrl)}
             alt={biz.primaryKeyword[language]}
             referrerPolicy="no-referrer"
             onError={() => setHeroImgFailed(true)}

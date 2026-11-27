@@ -43,15 +43,24 @@ export function CmsProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   const refreshCms = useCallback(async () => {
+    if (
+      typeof window !== 'undefined' &&
+      window.location.hostname.endsWith('.github.io')
+    ) {
+      setLoading(false);
+      return;
+    }
     try {
       const res = await fetch('/api/cms', { cache: 'no-store' });
       if (!res.ok) return;
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) return;
       const data = (await res.json()) as { cms?: SiteCmsData };
       if (data?.cms) {
         setCms(data.cms);
       }
     } catch {
-      // keep fallback CMS on offline/transient error
+      // keep fallback CMS on offline/static hosting
     } finally {
       setLoading(false);
     }

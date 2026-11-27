@@ -23,8 +23,12 @@ import {
   buildGoogleCalendarUrl,
   formatDateHuman,
   getIcsDownloadUrl,
+  isStaticPagesHost,
   playNotificationChime,
 } from '../utils/calendarClient';
+import { resolveAssetUrl } from '../utils/assetUrl';
+import { calculateDynamicLotEstimate } from '../data/defaultCms';
+import type { SiteCmsData } from '../types/cms';
 
 interface CapturedSiteVisit {
   name: string;
@@ -137,6 +141,66 @@ function detectSpanishReply(text: string, fallbackLang: 'en' | 'es'): 'en-US' | 
     return 'en-US';
   }
   return fallbackLang === 'es' ? 'es-US' : 'en-US';
+}
+
+function buildOfflineJessicaReply(
+  userText: string,
+  cms: SiteCmsData,
+  fallbackLang: 'en' | 'es'
+): string {
+  const q = userText.toLowerCase();
+  const isEs =
+    detectSpanishReply(userText, fallbackLang) === 'es-US';
+  const biz = cms.business;
+  const pricing = cms.pricing;
+
+  const asksHoursOrAddress =
+    /(hour|open|close|address|where|location|map|phone|call|horario|hora|abre|cierra|direcci[oó]n|ubicaci[oó]n|tel[eé]fono|llamar|zona|ciudad|area|serve|cubr)/i.test(
+      q
+    );
+  const asksSchedule = /(book|schedule|visit|date|calendar|agendar|cita|visita|fecha|calendario)/i.test(
+    q
+  );
+  const asksPrice =
+    /(price|cost|quote|estimat|how much|acre|palmetto|brush|stump|driveway|cu[aá]nto|precio|cotiz|estimar|palma|maleza|toc[oó]n|descuento)/i.test(
+      q
+    );
+
+  if (asksSchedule) {
+    return isEs
+      ? `¡Hola! Soy ${biz.assistantName} de ${biz.businessName}. Atendemos evaluaciones gratuitas en terreno de lunes a viernes (martes solo de 12:00 PM a 5:00 PM; sábados y domingos cerrado). Puedes elegir tu fecha y hora directamente en la sección "Agenda tu Evaluación" arriba en la página o llamarnos al ${biz.phone}.`
+      : `Hi! I'm ${biz.assistantName} with ${biz.businessName}. We schedule free on-site evaluations Monday–Friday (Tuesdays 12:00 PM–5:00 PM only; closed Sat–Sun). You can pick an open date and arrival window right in our calendar section on this page, or call us at ${biz.phone}.`;
+  }
+
+  if (asksPrice) {
+    let lotId = '1.00';
+    if (/(0\.25|quarter|cuarto)/.test(q)) lotId = '0.25';
+    else if (/(0\.5|half|medio)/.test(q)) lotId = '0.50';
+    else if (/(2\b|two|dos)/.test(q)) lotId = '2.00';
+    else if (/(5|five|cinco|10|20|40|bulk|volumen)/.test(q)) lotId = '5.00+';
+
+    let densityId = 'medium';
+    if (/(heavy|palmetto|palma|dense|densa|cerrad)/.test(q)) densityId = 'heavy';
+    else if (/(light|weed|liger|pasto)/.test(q)) densityId = 'light';
+
+    const est = calculateDynamicLotEstimate(pricing, lotId, densityId, []);
+    const lotObj = pricing.lotSizes.find((l) => l.id === lotId);
+    const denObj = pricing.densities.find((d) => d.id === densityId);
+
+    return isEs
+      ? `¡Hola! Soy ${biz.assistantName} de ${biz.businessName}. Para ${lotObj?.labelEs ?? '1.0 Acre'} con ${denObj?.labelEs ?? 'sotobosque medio'}, el rango estimado preliminar es de $${est.totalMin.toLocaleString()} – $${est.totalMax.toLocaleString()} USD (tarifa mínima de movilización $${pricing.minimumMobilizationFee}, y lotes de 5+ acres reciben ${Math.round(pricing.bulkDiscountRate * 100)}% de descuento). Adicionales: tocones +$450, retiro de troncos +$750, acceso vehicular +$650. Llámanos al ${biz.phone} para confirmar gratis en sitio.`
+      : `Hi! I'm ${biz.assistantName} with ${biz.businessName}. For ${lotObj?.labelEn ?? '1.0 Acre'} of ${denObj?.labelEn ?? 'medium brush'}, a preliminary ballpark estimate is $${est.totalMin.toLocaleString()} – $${est.totalMax.toLocaleString()} (our $${pricing.minimumMobilizationFee} minimum mobilization applies, and 5+ acres include a ${Math.round(pricing.bulkDiscountRate * 100)}% bulk discount). Optional add-ons: stump grinding +$450, timber haul-off +$750, driveway cut-in +$650. Call ${biz.phone} to lock a firm free on-site quote!`;
+  }
+
+  if (asksHoursOrAddress) {
+    return isEs
+      ? `¡Hola! Soy ${biz.assistantName} de ${biz.businessName} (operado por ${biz.ownerName}). Estamos en 1680 Duval Pond Rd, ${biz.cityState} (Tel: ${biz.phone}). Horario: Lun, Mié–Vie 9 AM–5 PM, Mar 12–5 PM (Sáb–Dom cerrado). Cubrimos ${biz.serviceArea}.`
+      : `Hi! I'm ${biz.assistantName} with ${biz.businessName} (led by ${biz.ownerName}). We're located at 1680 Duval Pond Rd, ${biz.cityState} — phone ${biz.phone}. Hours: Mon, Wed–Fri 9 AM–5 PM, Tue 12–5 PM (Closed Sat–Sun). We serve ${biz.serviceArea}.`;
+  }
+
+  return isEs
+    ? `¡Hola! Soy ${biz.assistantName} de ${biz.businessName} en 1680 Duval Pond Rd, ${biz.cityState} (${biz.phone}). Cubrimos ${biz.serviceArea} con tarifa mínima de $${pricing.minimumMobilizationFee} y 15% de descuento en 5+ acres. Pregúntame por precios según tus acres, horarios o usa el cotizador de la página.`
+    : `Hi! I'm ${biz.assistantName} with ${biz.businessName} at 1680 Duval Pond Rd, ${biz.cityState} (${biz.phone}). We serve ${biz.serviceArea} with a $${pricing.minimumMobilizationFee} minimum mobilization and 15% off 5+ acres. Ask me about acreage pricing, hours, or use our instant estimator on the page!`;
 }
 
 export function AiReceptionistWidget() {
@@ -338,6 +402,21 @@ export function AiReceptionistWidget() {
     setIsSending(true);
 
     try {
+      if (isStaticPagesHost()) {
+        const offlineReply = buildOfflineJessicaReply(trimmed, cms, language);
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === modelMsgId
+              ? { ...m, text: offlineReply, isStreaming: false }
+              : m
+          )
+        );
+        if (speakResponse) {
+          speakText(offlineReply);
+        }
+        return;
+      }
+
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -346,6 +425,22 @@ export function AiReceptionistWidget() {
           language,
         }),
       });
+
+      const contentType = response.headers.get('content-type') || '';
+      if (!response.ok && (response.status === 404 || !contentType.includes('application/json') && !contentType.includes('text/event-stream'))) {
+        const offlineReply = buildOfflineJessicaReply(trimmed, cms, language);
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === modelMsgId
+              ? { ...m, text: offlineReply, isStreaming: false }
+              : m
+          )
+        );
+        if (speakResponse) {
+          speakText(offlineReply);
+        }
+        return;
+      }
 
       if (!response.ok) {
         let serverError = `Request failed (${response.status})`;
@@ -552,7 +647,7 @@ export function AiReceptionistWidget() {
         >
           {biz.assistantAvatarUrl ? (
             <img
-              src={biz.assistantAvatarUrl}
+              src={resolveAssetUrl(biz.assistantAvatarUrl)}
               alt={biz.assistantName}
               referrerPolicy="no-referrer"
               className="w-9 h-9 rounded-full object-cover object-top border-2 border-[var(--cv-accent)] shrink-0 bg-white"
@@ -576,7 +671,7 @@ export function AiReceptionistWidget() {
             <div className="flex items-center gap-2.5 min-w-0">
               {biz.assistantAvatarUrl ? (
                 <img
-                  src={biz.assistantAvatarUrl}
+                  src={resolveAssetUrl(biz.assistantAvatarUrl)}
                   alt={biz.assistantName}
                   referrerPolicy="no-referrer"
                   className="w-10 h-10 rounded-full object-cover object-top border-2 border-[var(--cv-accent)] shrink-0 bg-white"
@@ -749,7 +844,7 @@ export function AiReceptionistWidget() {
 
                       <div className="flex flex-wrap gap-1.5 pt-1">
                         <a
-                          href={getIcsDownloadUrl(msg.bookedAppointment.id)}
+                          href={getIcsDownloadUrl(msg.bookedAppointment.id, msg.bookedAppointment, biz)}
                           download={`site-visit-${msg.bookedAppointment.id}.ics`}
                           className="inline-flex items-center gap-1.5 text-[11px] font-semibold bg-[var(--cv-primary)] hover:bg-[var(--cv-primary-dark)] text-white px-2.5 py-1.5 rounded transition-colors"
                         >

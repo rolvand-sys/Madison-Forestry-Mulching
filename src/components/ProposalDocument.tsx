@@ -1,5 +1,6 @@
 import { useLanguage } from '../context/LanguageContext';
 import { useCms } from '../context/CmsContext';
+import { resolveAssetUrl } from '../utils/assetUrl';
 
 export interface ProposalData {
   quoteNumber: string;
@@ -52,7 +53,7 @@ export function ProposalDocument({ data }: ProposalDocumentProps) {
         <div className="flex items-start gap-3">
           {biz.logoUrl ? (
             <img
-              src={biz.logoUrl}
+              src={resolveAssetUrl(biz.logoUrl)}
               alt={biz.businessName}
               referrerPolicy="no-referrer"
               className="h-24 w-24 rounded-md object-cover bg-[#2C1E14] border border-[#231710]/30 shrink-0"

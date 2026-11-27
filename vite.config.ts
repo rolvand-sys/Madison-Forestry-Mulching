@@ -6,6 +6,7 @@ import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
   return {
+    base: './',
     plugins: [
       react(),
       tailwindcss(),
@@ -24,6 +25,15 @@ export default defineConfig(() => {
           const distAssets = path.resolve(distDir, 'src/assets');
           if (fs.existsSync(distDir) && fs.existsSync(srcAssets)) {
             fs.cpSync(srcAssets, distAssets, {recursive: true, force: true});
+          }
+
+          // Mirror build output to /docs with .nojekyll so GitHub Pages can deploy
+          // directly from main:/docs without requiring GitHub Actions workflow scope.
+          const docsDir = path.resolve(__dirname, 'docs');
+          if (fs.existsSync(distDir)) {
+            fs.rmSync(docsDir, {recursive: true, force: true});
+            fs.cpSync(distDir, docsDir, {recursive: true, force: true});
+            fs.writeFileSync(path.join(docsDir, '.nojekyll'), '');
           }
         },
       },

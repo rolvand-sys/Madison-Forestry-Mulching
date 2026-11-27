@@ -1,6 +1,12 @@
 import { defaultSiteCms } from '../data/defaultCms';
 import type { Language } from '../data/translations';
 import type { CmsBusinessProfile } from '../types/cms';
+import { resolveAssetUrl } from './assetUrl';
+
+export function isStaticPagesHost(): boolean {
+  if (typeof window === 'undefined') return false;
+  return window.location.hostname.endsWith('.github.io');
+}
 
 export type AppointmentStatus = 'pending' | 'confirmed' | 'completed' | 'cancelled';
 export type AppointmentSource = 'web' | 'sarah';
@@ -15,6 +21,45 @@ export interface TimeSlotDef {
   endMinute: number;
 }
 
+export const STATIC_SITE_VISIT_SLOTS: TimeSlotDef[] = [
+  {
+    id: '09:00',
+    labelEn: '9:00 AM – 10:30 AM',
+    labelEs: '9:00 AM – 10:30 AM',
+    startHour: 9,
+    startMinute: 0,
+    endHour: 10,
+    endMinute: 30,
+  },
+  {
+    id: '11:00',
+    labelEn: '11:00 AM – 12:30 PM',
+    labelEs: '11:00 AM – 12:30 PM',
+    startHour: 11,
+    startMinute: 0,
+    endHour: 12,
+    endMinute: 30,
+  },
+  {
+    id: '13:30',
+    labelEn: '1:30 PM – 3:00 PM',
+    labelEs: '1:30 PM – 3:00 PM',
+    startHour: 13,
+    startMinute: 30,
+    endHour: 15,
+    endMinute: 0,
+  },
+  {
+    id: '15:30',
+    labelEn: '3:30 PM – 5:00 PM',
+    labelEs: '3:30 PM – 5:00 PM',
+    startHour: 15,
+    startMinute: 30,
+    endHour: 17,
+    endMinute: 0,
+  },
+];
+
 export interface DayAvailability {
   date: string;
   dayOfWeek: number;
@@ -23,6 +68,46 @@ export interface DayAvailability {
   bookedSlots: string[];
   blockedSlots: string[];
   openSlots: string[];
+}
+
+export function buildStaticAvailability(daysCount = 62): {
+  todayIso: string;
+  slots: TimeSlotDef[];
+  days: DayAvailability[];
+} {
+  const now = new Date();
+  const todayIso = now.toISOString().slice(0, 10);
+  const [y, m, d] = todayIso.split('-').map(Number);
+  const days: DayAvailability[] = [];
+
+  for (let i = 0; i < daysCount; i++) {
+    const dt = new Date(Date.UTC(y, m - 1, d + i, 12, 0, 0));
+    const date = dt.toISOString().slice(0, 10);
+    const dayOfWeek = dt.getUTCDay();
+    const isClosedDay = dayOfWeek === 0 || dayOfWeek === 6;
+    const isPast = date <= todayIso;
+    const dayAllowed = isClosedDay
+      ? []
+      : dayOfWeek === 2
+      ? STATIC_SITE_VISIT_SLOTS.filter((s) => s.startHour >= 12)
+      : STATIC_SITE_VISIT_SLOTS;
+    const openSlots = isClosedDay || isPast ? [] : dayAllowed.map((s) => s.id);
+    days.push({
+      date,
+      dayOfWeek,
+      isClosedDay,
+      isBlockedDate: false,
+      bookedSlots: [],
+      blockedSlots: [],
+      openSlots,
+    });
+  }
+
+  return {
+    todayIso,
+    slots: STATIC_SITE_VISIT_SLOTS,
+    days,
+  };
 }
 
 export interface Appointment {
@@ -68,7 +153,47 @@ export function formatDateHuman(dateIso: string, language: Language): string {
   });
 }
 
-export function getIcsDownloadUrl(appointmentId: string): string {
+export function buildClientIcsHref(
+  appointment: Appointment,
+  biz: CmsBusinessProfile = defaultSiteCms.business
+): string {
+  const dateCompact = appointment.date.replace(/-/g, '');
+  const slotMap: Record<string, { start: string; end: string }> = {
+    '09:00': { start: '090000', end: '103000' },
+    '11:00': { start: '110000', end: '123000' },
+    '13:30': { start: '133000', end: '150000' },
+    '15:30': { start: '153000', end: '170000' },
+  };
+  const win = slotMap[appointment.timeSlot] ?? { start: '090000', end: '103000' };
+  const esc = (s: string) =>
+    s.replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\n/g, '\\n');
+
+  const lines = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    `PRODID:-//${esc(biz.shortName)}//Site Visit//EN`,
+    'BEGIN:VEVENT',
+    `UID:${appointment.id}@madisonlandclearing.local`,
+    `DTSTART;TZID=America/New_York:${dateCompact}T${win.start}`,
+    `DTEND;TZID=America/New_York:${dateCompact}T${win.end}`,
+    `SUMMARY:${esc(`Site Evaluation - ${biz.shortName} (${appointment.lotSize})`)}`,
+    `LOCATION:${esc(appointment.propertyAddress)}`,
+    `DESCRIPTION:${esc(`Ref: ${appointment.id} | Scope: ${appointment.serviceType} | Phone: ${biz.phone}`)}`,
+    'END:VEVENT',
+    'END:VCALENDAR',
+  ].join('\r\n');
+
+  return `data:text/calendar;charset=utf-8,${encodeURIComponent(lines)}`;
+}
+
+export function getIcsDownloadUrl(
+  appointmentId: string,
+  appointment?: Appointment,
+  biz?: CmsBusinessProfile
+): string {
+  if (isStaticPagesHost() && appointment) {
+    return buildClientIcsHref(appointment, biz);
+  }
   return `/api/appointments/${encodeURIComponent(appointmentId)}/invite.ics`;
 }
 
@@ -201,9 +326,10 @@ export async function triggerBrowserNotification(
 
   if (permission === 'granted') {
     try {
+      const resolvedIcon = resolveAssetUrl(iconUrl || defaultSiteCms.business.logoUrl);
       new Notification(title, {
         body,
-        icon: iconUrl || defaultSiteCms.business.logoUrl || undefined,
+        icon: resolvedIcon || undefined,
       });
     } catch {
       // ignore desktop notification quirk inside strict frames

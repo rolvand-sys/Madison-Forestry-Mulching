@@ -45,9 +45,11 @@ function createInitialProposalData(brandMonogram: string): ProposalData {
 
 function AppContent() {
   const { cms } = useCms();
-  const [currentPath, setCurrentPath] = useState<string>(() =>
-    typeof window !== 'undefined' ? window.location.pathname : '/'
-  );
+  const [currentPath, setCurrentPath] = useState<string>(() => {
+    if (typeof window === 'undefined') return '/';
+    if (window.location.hash === '#/admin') return '/admin';
+    return window.location.pathname;
+  });
   const [selectedServiceId, setSelectedServiceId] = useState<string | undefined>(
     undefined
   );
@@ -59,6 +61,19 @@ function AppContent() {
 
   const navigateTo = useCallback((path: string) => {
     if (typeof window === 'undefined') return;
+    const isSubpathOrStatic =
+      window.location.hostname.endsWith('.github.io') ||
+      (import.meta.env.BASE_URL === './' &&
+        window.location.pathname !== '/' &&
+        !window.location.pathname.startsWith('/admin'));
+
+    if (isSubpathOrStatic) {
+      window.location.hash = path === '/admin' ? '#/admin' : '';
+      setCurrentPath(path);
+      window.scrollTo({ top: 0, behavior: 'auto' });
+      return;
+    }
+
     if (window.location.pathname !== path) {
       window.history.pushState({}, '', path);
     }
@@ -67,14 +82,25 @@ function AppContent() {
   }, []);
 
   useEffect(() => {
-    const handlePopState = () => {
-      setCurrentPath(window.location.pathname);
+    const syncRoute = () => {
+      if (window.location.hash === '#/admin') {
+        setCurrentPath('/admin');
+      } else {
+        setCurrentPath(window.location.pathname);
+      }
     };
-    window.addEventListener('popstate', handlePopState);
-    return () => window.removeEventListener('popstate', handlePopState);
+    window.addEventListener('popstate', syncRoute);
+    window.addEventListener('hashchange', syncRoute);
+    return () => {
+      window.removeEventListener('popstate', syncRoute);
+      window.removeEventListener('hashchange', syncRoute);
+    };
   }, []);
 
-  const isAdminRoute = currentPath.startsWith('/admin');
+  const isAdminRoute =
+    currentPath === '/admin' ||
+    currentPath.startsWith('/admin/') ||
+    currentPath.endsWith('/admin');
 
   useEffect(() => {
     if (typeof document === 'undefined') return;

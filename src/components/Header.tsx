@@ -3,6 +3,7 @@ import { Menu, Phone, X } from 'lucide-react';
 import { useLanguage } from '../context/LanguageContext';
 import { useCallModal } from '../context/CallContext';
 import { useCms } from '../context/CmsContext';
+import { resolveAssetUrl } from '../utils/assetUrl';
 
 export function Header() {
   const { language, setLanguage, t } = useLanguage();
@@ -34,7 +35,7 @@ export function Header() {
         >
           {biz.logoUrl ? (
             <img
-              src={biz.logoUrl}
+              src={resolveAssetUrl(biz.logoUrl)}
               alt={biz.businessName}
               referrerPolicy="no-referrer"
               className="h-[72px] w-[72px] sm:h-[84px] sm:w-[84px] rounded-lg object-cover bg-[#2C1E14] border-2 border-[var(--cv-accent)]/70 shadow-md shrink-0"

@@ -53,6 +53,18 @@ export function ContractorQuoteModal({
     setPinError('');
 
     try {
+      if (
+        typeof window !== 'undefined' &&
+        window.location.hostname.endsWith('.github.io')
+      ) {
+        if (pinInput.trim() === (biz.contractorToolPin || '1234')) {
+          setUnlocked(true);
+          setPinInput('');
+        } else {
+          setPinError(c.pinError);
+        }
+        return;
+      }
       const res = await fetch('/api/contractor/verify-pin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

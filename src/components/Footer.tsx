@@ -2,6 +2,7 @@ import { Clock, MapPin, Navigation, Phone, Mail } from 'lucide-react';
 import { useLanguage } from '../context/LanguageContext';
 import { useCallModal } from '../context/CallContext';
 import { useCms } from '../context/CmsContext';
+import { resolveAssetUrl } from '../utils/assetUrl';
 
 interface FooterProps {
   onOpenContractorTool: () => void;
@@ -49,7 +50,7 @@ export function Footer({
             <div className="flex items-center gap-4">
               {biz.logoUrl ? (
                 <img
-                  src={biz.logoUrl}
+                  src={resolveAssetUrl(biz.logoUrl)}
                   alt={biz.businessName}
                   referrerPolicy="no-referrer"
                   className="h-24 w-24 rounded-lg object-cover bg-[#2C1E14] border-2 border-[var(--cv-accent)]/60 shadow-lg shrink-0"

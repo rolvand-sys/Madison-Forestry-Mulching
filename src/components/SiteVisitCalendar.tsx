@@ -20,11 +20,14 @@ import { useCms } from '../context/CmsContext';
 import {
   Appointment,
   DayAvailability,
+  STATIC_SITE_VISIT_SLOTS,
   TimeSlotDef,
   buildClientReceiptMailto,
   buildGoogleCalendarUrl,
+  buildStaticAvailability,
   formatDateHuman,
   getIcsDownloadUrl,
+  isStaticPagesHost,
   playNotificationChime,
   triggerBrowserNotification,
 } from '../utils/calendarClient';
@@ -183,33 +186,46 @@ export function SiteVisitCalendar({ onOpenOwnerDashboard }: SiteVisitCalendarPro
     [language, calCopy, biz.cityState, biz.shortName]
   );
 
+  const applyAvailabilityData = useCallback((data: AvailabilityResponse) => {
+    setTodayIso(data.todayIso);
+    setSlots(data.slots);
+
+    const map: Record<string, DayAvailability> = {};
+    for (const day of data.days) {
+      map[day.date] = day;
+    }
+    setDaysMap(map);
+
+    setSelectedDate((prevDate) => {
+      if (prevDate && map[prevDate] && map[prevDate].openSlots.length > 0) {
+        return prevDate;
+      }
+      const firstOpen = data.days.find((d) => d.openSlots.length > 0);
+      return firstOpen?.date ?? '';
+    });
+  }, []);
+
   const fetchAvailability = useCallback(async () => {
+    if (isStaticPagesHost()) {
+      applyAvailabilityData(buildStaticAvailability(62));
+      setLoading(false);
+      return;
+    }
     try {
       const res = await fetch('/api/calendar/availability?days=62');
-      if (!res.ok) return;
-      const data = (await res.json()) as AvailabilityResponse;
-      setTodayIso(data.todayIso);
-      setSlots(data.slots);
-
-      const map: Record<string, DayAvailability> = {};
-      for (const day of data.days) {
-        map[day.date] = day;
+      const contentType = res.headers.get('content-type') || '';
+      if (!res.ok || !contentType.includes('application/json')) {
+        applyAvailabilityData(buildStaticAvailability(62));
+        return;
       }
-      setDaysMap(map);
-
-      setSelectedDate((prevDate) => {
-        if (prevDate && map[prevDate] && map[prevDate].openSlots.length > 0) {
-          return prevDate;
-        }
-        const firstOpen = data.days.find((d) => d.openSlots.length > 0);
-        return firstOpen?.date ?? '';
-      });
+      const data = (await res.json()) as AvailabilityResponse;
+      applyAvailabilityData(data);
     } catch {
-      // keep existing state on transient error
+      applyAvailabilityData(buildStaticAvailability(62));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [applyAvailabilityData]);
 
   useEffect(() => {
     void fetchAvailability();
@@ -277,6 +293,29 @@ export function SiteVisitCalendar({ onOpenOwnerDashboard }: SiteVisitCalendarPro
     setSubmitting(true);
 
     try {
+      if (isStaticPagesHost()) {
+        const slotDef = STATIC_SITE_VISIT_SLOTS.find((s) => s.id === selectedSlot);
+        const offlineApt: Appointment = {
+          id: `ML-APT-${Date.now().toString(36).slice(-5).toUpperCase()}`,
+          date: selectedDate,
+          timeSlot: selectedSlot,
+          timeSlotLabel: slotDef ? (language === 'es' ? slotDef.labelEs : slotDef.labelEn) : selectedSlot,
+          clientName: clientName.trim(),
+          clientPhone: clientPhone.trim(),
+          clientEmail: clientEmail.trim() || undefined,
+          propertyAddress: propertyAddress.trim(),
+          lotSize,
+          serviceType,
+          notes: notes.trim() || undefined,
+          source: 'web',
+          status: 'pending',
+          createdAt: new Date().toISOString(),
+        };
+        setConfirmedAppointment(offlineApt);
+        playNotificationChime();
+        return;
+      }
+
       const res = await fetch('/api/appointments', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -292,6 +331,30 @@ export function SiteVisitCalendar({ onOpenOwnerDashboard }: SiteVisitCalendarPro
           notes: notes.trim() || undefined,
         }),
       });
+
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        const slotDef = STATIC_SITE_VISIT_SLOTS.find((s) => s.id === selectedSlot);
+        const fallbackApt: Appointment = {
+          id: `ML-APT-${Date.now().toString(36).slice(-5).toUpperCase()}`,
+          date: selectedDate,
+          timeSlot: selectedSlot,
+          timeSlotLabel: slotDef ? (language === 'es' ? slotDef.labelEs : slotDef.labelEn) : selectedSlot,
+          clientName: clientName.trim(),
+          clientPhone: clientPhone.trim(),
+          clientEmail: clientEmail.trim() || undefined,
+          propertyAddress: propertyAddress.trim(),
+          lotSize,
+          serviceType,
+          notes: notes.trim() || undefined,
+          source: 'web',
+          status: 'pending',
+          createdAt: new Date().toISOString(),
+        };
+        setConfirmedAppointment(fallbackApt);
+        playNotificationChime();
+        return;
+      }
 
       const payload = (await res.json()) as {
         appointment?: Appointment;
@@ -593,7 +656,7 @@ export function SiteVisitCalendar({ onOpenOwnerDashboard }: SiteVisitCalendarPro
                     </p>
 
                     <a
-                      href={getIcsDownloadUrl(confirmedAppointment.id)}
+                      href={getIcsDownloadUrl(confirmedAppointment.id, confirmedAppointment, biz)}
                       download={`site-visit-${confirmedAppointment.id}.ics`}
                       className="w-full inline-flex items-center justify-center gap-2 bg-[var(--cv-primary)] hover:bg-[var(--cv-primary-dark)] text-white font-semibold text-xs sm:text-sm px-4 py-2.5 rounded-md transition-colors"
                     >

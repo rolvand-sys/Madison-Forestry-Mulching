@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight, Maximize2, Trees, X } from 'lucide-react';
 import { useLanguage } from '../context/LanguageContext';
 import { useCms } from '../context/CmsContext';
 import type { CmsWorkPhoto } from '../types/cms';
+import { resolveAssetUrl } from '../utils/assetUrl';
 
 export function WorkGallery() {
   const { language, t } = useLanguage();
@@ -83,7 +84,7 @@ export function WorkGallery() {
                 >
                   {!isFailed ? (
                     <img
-                      src={photo.url}
+                      src={resolveAssetUrl(photo.url)}
                       alt={`${title} — ${location}`}
                       referrerPolicy="no-referrer"
                       loading="lazy"
@@ -166,7 +167,7 @@ export function WorkGallery() {
             <div className="relative bg-black aspect-[16/10] max-h-[70vh] w-full flex items-center justify-center">
               {!failedIds[activePhoto.id] && activePhoto.url ? (
                 <img
-                  src={activePhoto.url}
+                  src={resolveAssetUrl(activePhoto.url)}
                   alt={language === 'en' ? activePhoto.titleEn : activePhoto.titleEs}
                   referrerPolicy="no-referrer"
                   onError={() => markFailed(activePhoto.id)}
