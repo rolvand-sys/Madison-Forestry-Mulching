@@ -1,0 +1,10 @@
+{
+  "name": "Madison Land Clearing & Brush Mulching",
+  "description": "Madison Land Clearing & Brush Mulching | Madison, FL 32340\n1680 Duval Pond Rd, Madison, FL 32340 · (850) 973-7179\nForestry Service • Land Clearing • Brush Mulching • Trail & Fence Clearing",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

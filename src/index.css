@@ -1,0 +1,74 @@
+@import "tailwindcss";
+
+:root {
+  --cv-primary: #2E5A27;
+  --cv-primary-dark: #1F401A;
+  --cv-accent: #D9B382;
+  --cv-light-green: #72A350;
+  --cv-dark-surface: #231710;
+  --cv-dark-card: #312118;
+}
+
+@theme {
+  --font-display: "Roboto Slab", Georgia, ui-serif, serif;
+  --font-sans: "Outfit", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    scroll-padding-top: 7.5rem;
+  }
+
+  h1, h2, .font-display {
+    font-family: var(--font-display);
+  }
+}
+
+.wood-grain-band {
+  background-image:
+    repeating-linear-gradient(
+      90deg,
+      rgba(217, 179, 130, 0.03) 0px,
+      rgba(217, 179, 130, 0.03) 2px,
+      transparent 2px,
+      transparent 14px
+    ),
+    linear-gradient(135deg, #2D1E15 0%, #231710 55%, #1D2818 100%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@page {
+  size: letter;
+  margin: 0.45in;
+}
+
+@media print {
+  html,
+  body {
+    background: #ffffff !important;
+    color: #231710 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}
+
+@keyframes voiceBar {
+  0%, 100% {
+    transform: scaleY(0.35);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
