@@ -25,6 +25,7 @@ import {
   buildClientReceiptMailto,
   buildGoogleCalendarUrl,
   buildStaticAvailability,
+  createStaticAppointment,
   formatDateHuman,
   getIcsDownloadUrl,
   isStaticPagesHost,
@@ -233,7 +234,11 @@ export function SiteVisitCalendar({ onOpenOwnerDashboard }: SiteVisitCalendarPro
       void fetchAvailability();
     };
     window.addEventListener('clearview:calendar-updated', onUpdated);
-    return () => window.removeEventListener('clearview:calendar-updated', onUpdated);
+    window.addEventListener('storage', onUpdated);
+    return () => {
+      window.removeEventListener('clearview:calendar-updated', onUpdated);
+      window.removeEventListener('storage', onUpdated);
+    };
   }, [fetchAvailability]);
 
   useEffect(() => {
@@ -294,12 +299,9 @@ export function SiteVisitCalendar({ onOpenOwnerDashboard }: SiteVisitCalendarPro
 
     try {
       if (isStaticPagesHost()) {
-        const slotDef = STATIC_SITE_VISIT_SLOTS.find((s) => s.id === selectedSlot);
-        const offlineApt: Appointment = {
-          id: `ML-APT-${Date.now().toString(36).slice(-5).toUpperCase()}`,
+        const created = createStaticAppointment({
           date: selectedDate,
           timeSlot: selectedSlot,
-          timeSlotLabel: slotDef ? (language === 'es' ? slotDef.labelEs : slotDef.labelEn) : selectedSlot,
           clientName: clientName.trim(),
           clientPhone: clientPhone.trim(),
           clientEmail: clientEmail.trim() || undefined,
@@ -308,11 +310,15 @@ export function SiteVisitCalendar({ onOpenOwnerDashboard }: SiteVisitCalendarPro
           serviceType,
           notes: notes.trim() || undefined,
           source: 'web',
-          status: 'pending',
-          createdAt: new Date().toISOString(),
-        };
-        setConfirmedAppointment(offlineApt);
+        });
+        if (!created.ok) {
+          setFormError(created.error || copy.validationErr);
+          void fetchAvailability();
+          return;
+        }
+        setConfirmedAppointment(created.appointment);
         playNotificationChime();
+        void fetchAvailability();
         return;
       }
 
@@ -334,12 +340,9 @@ export function SiteVisitCalendar({ onOpenOwnerDashboard }: SiteVisitCalendarPro
 
       const contentType = res.headers.get('content-type') || '';
       if (!contentType.includes('application/json')) {
-        const slotDef = STATIC_SITE_VISIT_SLOTS.find((s) => s.id === selectedSlot);
-        const fallbackApt: Appointment = {
-          id: `ML-APT-${Date.now().toString(36).slice(-5).toUpperCase()}`,
+        const created = createStaticAppointment({
           date: selectedDate,
           timeSlot: selectedSlot,
-          timeSlotLabel: slotDef ? (language === 'es' ? slotDef.labelEs : slotDef.labelEn) : selectedSlot,
           clientName: clientName.trim(),
           clientPhone: clientPhone.trim(),
           clientEmail: clientEmail.trim() || undefined,
@@ -348,11 +351,15 @@ export function SiteVisitCalendar({ onOpenOwnerDashboard }: SiteVisitCalendarPro
           serviceType,
           notes: notes.trim() || undefined,
           source: 'web',
-          status: 'pending',
-          createdAt: new Date().toISOString(),
-        };
-        setConfirmedAppointment(fallbackApt);
+        });
+        if (!created.ok) {
+          setFormError(created.error || copy.validationErr);
+          void fetchAvailability();
+          return;
+        }
+        setConfirmedAppointment(created.appointment);
         playNotificationChime();
+        void fetchAvailability();
         return;
       }
 

@@ -191,7 +191,7 @@ function buildSystemInstruction(uiLanguage: 'en' | 'es'): string {
     `- Business Name: ${biz.businessName} (Short: ${biz.shortName})`,
     '- Category: Forestry service / Land Clearing & Brush Mulching.',
     ownerLine,
-    `- Street Address & Headquarters: 1680 Duval Pond Rd, ${biz.cityState} (Plus Code: GHWW+VF Madison, Florida)`,
+    `- Street Address & Headquarters: ${biz.cityState} (Plus Code: GHWW+VF Madison, Florida)`,
     '- Google Maps Link: https://maps.app.goo.gl/jxx9k4PnS1odePzy6',
     `- Direct Phone / Dispatch: ${biz.phone}`,
     `- Email: ${biz.email}`,
@@ -232,8 +232,11 @@ function buildSystemInstruction(uiLanguage: 'en' | 'es'): string {
       ? `\nEXTRA BUSINESS INSTRUCTIONS FROM ADMIN:\n${cms.sections.assistant.extraInstructions}`
       : '',
     '',
-    'RESPONSE STYLE:',
-    `- Respond warmly, clearly, and concisely (2–4 sentences or crisp bullet points) as ${assistantName} from ${biz.shortName}, easy to read in chat and natural when spoken aloud.`,
+    'RESPONSE STYLE (LIVE CHAT RULES — CRITICAL):',
+    `- Remember this is a LIVE CHAT widget, NOT an email or brochure. Keep replies brief, warm, and conversational as ${assistantName} from ${biz.shortName}.`,
+    '- NEVER write one long paragraph or wall of text. Keep each individual message short (1–2 crisp sentences max).',
+    '- Break your answer into 2 or 3 short chat bubbles separated by exact delimiter `|||` (for example: quick greeting + main answer ||| brief pricing/detail note ||| short next-step question).',
+    '- Only share the specific info the user asked for instead of listing every add-on or city at once.',
   ]
     .filter(Boolean)
     .join('\n');

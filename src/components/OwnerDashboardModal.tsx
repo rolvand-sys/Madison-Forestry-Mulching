@@ -32,10 +32,20 @@ import {
   TimeSlotDef,
   buildClientReceiptMailto,
   buildOwnerSmsClientHref,
+  claimStaticOwnerPasscode,
+  deleteStaticAppointment,
   formatDateHuman,
   getIcsDownloadUrl,
+  getStaticOwnerAuthStatus,
+  getStaticOwnerDashboard,
+  isStaticPagesHost,
+  markStaticNotificationsRead,
   playNotificationChime,
+  toggleStaticBlockedDate,
+  toggleStaticBlockedSlot,
   triggerBrowserNotification,
+  updateStaticAppointmentStatus,
+  verifyStaticOwnerPasscode,
 } from '../utils/calendarClient';
 
 interface OwnerDashboardModalProps {
@@ -220,17 +230,31 @@ export function OwnerDashboardModal({ isOpen, onClose }: OwnerDashboardModalProp
   }, [isOpen, onClose]);
 
   const loadAuthStatus = useCallback(async () => {
+    if (isStaticPagesHost()) {
+      setAuthStatus(getStaticOwnerAuthStatus());
+      return;
+    }
     try {
       const res = await fetch('/api/owner/auth-status');
-      if (!res.ok) return;
+      const contentType = res.headers.get('content-type') || '';
+      if (!res.ok || !contentType.includes('application/json')) {
+        setAuthStatus(getStaticOwnerAuthStatus());
+        return;
+      }
       const data = (await res.json()) as { configuredViaEnv: boolean; claimed: boolean };
       setAuthStatus(data);
     } catch {
-      // ignore
+      setAuthStatus(getStaticOwnerAuthStatus());
     }
   }, []);
 
   const fetchDashboard = useCallback(async (authToken: string) => {
+    if (isStaticPagesHost() || authToken === 'static-owner-session') {
+      const data = getStaticOwnerDashboard();
+      setDashboard(data);
+      setSelectedManageDate((prev) => prev || data.todayIso);
+      return;
+    }
     try {
       const res = await fetch('/api/owner/dashboard', {
         headers: { Authorization: `Bearer ${authToken}` },
@@ -260,6 +284,24 @@ export function OwnerDashboardModal({ isOpen, onClose }: OwnerDashboardModalProp
 
   useEffect(() => {
     if (!isOpen || !token) return;
+
+    if (isStaticPagesHost() || token === 'static-owner-session') {
+      const onUpdated = () => {
+        const next = getStaticOwnerDashboard();
+        setDashboard(next);
+        const latest = next.notifications[0];
+        if (latest && !latest.read) {
+          setLiveToast(latest);
+          if (soundEnabled) playNotificationChime();
+        }
+      };
+      window.addEventListener('clearview:calendar-updated', onUpdated);
+      window.addEventListener('storage', onUpdated);
+      return () => {
+        window.removeEventListener('clearview:calendar-updated', onUpdated);
+        window.removeEventListener('storage', onUpdated);
+      };
+    }
 
     const controller = new AbortController();
 
@@ -344,12 +386,40 @@ export function OwnerDashboardModal({ isOpen, onClose }: OwnerDashboardModalProp
 
     setAuthBusy(true);
     try {
+      if (isStaticPagesHost()) {
+        const result = needsInitialClaim
+          ? claimStaticOwnerPasscode(passcodeInput)
+          : verifyStaticOwnerPasscode(passcodeInput);
+        if (!result.ok) {
+          setAuthError(result.error);
+          return;
+        }
+        setToken(result.token);
+        setPasscodeInput('');
+        setConfirmPasscodeInput('');
+        return;
+      }
+
       const endpoint = needsInitialClaim ? '/api/owner/claim' : '/api/owner/login';
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ passcode: passcodeInput }),
       });
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        const result = needsInitialClaim
+          ? claimStaticOwnerPasscode(passcodeInput)
+          : verifyStaticOwnerPasscode(passcodeInput);
+        if (!result.ok) {
+          setAuthError(result.error);
+          return;
+        }
+        setToken(result.token);
+        setPasscodeInput('');
+        setConfirmPasscodeInput('');
+        return;
+      }
       const data = (await res.json()) as { token?: string; error?: string };
       if (!res.ok || !data.token) {
         setAuthError(data.error || 'Authentication failed.');
@@ -367,6 +437,11 @@ export function OwnerDashboardModal({ isOpen, onClose }: OwnerDashboardModalProp
 
   const handleStatusChange = async (id: string, status: AppointmentStatus) => {
     if (!token) return;
+    if (isStaticPagesHost() || token === 'static-owner-session') {
+      updateStaticAppointmentStatus(id, status);
+      void fetchDashboard(token);
+      return;
+    }
     await fetch(`/api/owner/appointments/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       headers: {
@@ -381,6 +456,11 @@ export function OwnerDashboardModal({ isOpen, onClose }: OwnerDashboardModalProp
 
   const handleDelete = async (id: string) => {
     if (!token) return;
+    if (isStaticPagesHost() || token === 'static-owner-session') {
+      deleteStaticAppointment(id);
+      void fetchDashboard(token);
+      return;
+    }
     await fetch(`/api/owner/appointments/${encodeURIComponent(id)}`, {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${token}` },
@@ -391,6 +471,11 @@ export function OwnerDashboardModal({ isOpen, onClose }: OwnerDashboardModalProp
 
   const handleToggleDayBlock = async (date: string) => {
     if (!token) return;
+    if (isStaticPagesHost() || token === 'static-owner-session') {
+      toggleStaticBlockedDate(date);
+      void fetchDashboard(token);
+      return;
+    }
     await fetch('/api/owner/blocks/date', {
       method: 'POST',
       headers: {
@@ -405,6 +490,11 @@ export function OwnerDashboardModal({ isOpen, onClose }: OwnerDashboardModalProp
 
   const handleToggleSlotBlock = async (date: string, timeSlot: string) => {
     if (!token) return;
+    if (isStaticPagesHost() || token === 'static-owner-session') {
+      toggleStaticBlockedSlot(date, timeSlot);
+      void fetchDashboard(token);
+      return;
+    }
     await fetch('/api/owner/blocks/slot', {
       method: 'POST',
       headers: {
@@ -419,6 +509,12 @@ export function OwnerDashboardModal({ isOpen, onClose }: OwnerDashboardModalProp
 
   const handleMarkAllRead = async () => {
     if (!token) return;
+    if (isStaticPagesHost() || token === 'static-owner-session') {
+      markStaticNotificationsRead();
+      setLiveToast(null);
+      void fetchDashboard(token);
+      return;
+    }
     await fetch('/api/owner/notifications/read', {
       method: 'POST',
       headers: {
@@ -903,7 +999,7 @@ export function OwnerDashboardModal({ isOpen, onClose }: OwnerDashboardModalProp
 
                           <div className="flex flex-wrap gap-1.5">
                             <a
-                              href={getIcsDownloadUrl(apt.id)}
+                              href={getIcsDownloadUrl(apt.id, apt, biz)}
                               download={`site-visit-${apt.id}.ics`}
                               className="inline-flex items-center gap-1 text-xs font-medium bg-[var(--cv-dark-surface)] hover:bg-white/10 border border-white/15 text-neutral-200 px-2.5 py-1.5 rounded"
                             >

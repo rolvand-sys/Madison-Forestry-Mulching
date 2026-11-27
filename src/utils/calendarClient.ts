@@ -70,14 +70,73 @@ export interface DayAvailability {
   openSlots: string[];
 }
 
+const STATIC_STORE_KEY = 'madison_static_calendar_v1';
+
+interface StaticCalendarStore {
+  appointments: Appointment[];
+  notifications: OwnerNotification[];
+  blockedDates: string[];
+  blockedSlots: Record<string, string[]>;
+  ownerPasscode: string | null;
+}
+
+function getEasternTodayIso(): string {
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/New_York',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date());
+  } catch {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
+function readStaticStore(): StaticCalendarStore {
+  const empty: StaticCalendarStore = {
+    appointments: [],
+    notifications: [],
+    blockedDates: [],
+    blockedSlots: {},
+    ownerPasscode: null,
+  };
+  if (typeof window === 'undefined') return empty;
+  try {
+    const raw = window.localStorage.getItem(STATIC_STORE_KEY);
+    if (!raw) return empty;
+    const parsed = JSON.parse(raw) as Partial<StaticCalendarStore>;
+    return {
+      appointments: Array.isArray(parsed.appointments) ? parsed.appointments : [],
+      notifications: Array.isArray(parsed.notifications) ? parsed.notifications : [],
+      blockedDates: Array.isArray(parsed.blockedDates) ? parsed.blockedDates : [],
+      blockedSlots:
+        parsed.blockedSlots && typeof parsed.blockedSlots === 'object' ? parsed.blockedSlots : {},
+      ownerPasscode: typeof parsed.ownerPasscode === 'string' ? parsed.ownerPasscode : null,
+    };
+  } catch {
+    return empty;
+  }
+}
+
+function writeStaticStore(store: StaticCalendarStore): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(STATIC_STORE_KEY, JSON.stringify(store));
+    window.dispatchEvent(new CustomEvent('clearview:calendar-updated'));
+  } catch {
+    // ignore storage quota error
+  }
+}
+
 export function buildStaticAvailability(daysCount = 62): {
   todayIso: string;
   slots: TimeSlotDef[];
   days: DayAvailability[];
 } {
-  const now = new Date();
-  const todayIso = now.toISOString().slice(0, 10);
+  const todayIso = getEasternTodayIso();
   const [y, m, d] = todayIso.split('-').map(Number);
+  const store = readStaticStore();
   const days: DayAvailability[] = [];
 
   for (let i = 0; i < daysCount; i++) {
@@ -86,19 +145,33 @@ export function buildStaticAvailability(daysCount = 62): {
     const dayOfWeek = dt.getUTCDay();
     const isClosedDay = dayOfWeek === 0 || dayOfWeek === 6;
     const isPast = date <= todayIso;
+    const isBlockedDate = store.blockedDates.includes(date);
+
     const dayAllowed = isClosedDay
       ? []
       : dayOfWeek === 2
       ? STATIC_SITE_VISIT_SLOTS.filter((s) => s.startHour >= 12)
       : STATIC_SITE_VISIT_SLOTS;
-    const openSlots = isClosedDay || isPast ? [] : dayAllowed.map((s) => s.id);
+
+    const bookedSlots = store.appointments
+      .filter((a) => a.date === date && a.status !== 'cancelled')
+      .map((a) => a.timeSlot);
+    const blockedSlots = Array.isArray(store.blockedSlots[date]) ? store.blockedSlots[date] : [];
+
+    const openSlots =
+      isClosedDay || isPast || isBlockedDate
+        ? []
+        : dayAllowed
+            .map((s) => s.id)
+            .filter((slotId) => !bookedSlots.includes(slotId) && !blockedSlots.includes(slotId));
+
     days.push({
       date,
       dayOfWeek,
       isClosedDay,
-      isBlockedDate: false,
-      bookedSlots: [],
-      blockedSlots: [],
+      isBlockedDate,
+      bookedSlots,
+      blockedSlots,
       openSlots,
     });
   }
@@ -108,6 +181,173 @@ export function buildStaticAvailability(daysCount = 62): {
     slots: STATIC_SITE_VISIT_SLOTS,
     days,
   };
+}
+
+export function createStaticAppointment(input: {
+  date: string;
+  timeSlot: string;
+  clientName: string;
+  clientPhone: string;
+  clientEmail?: string;
+  propertyAddress: string;
+  lotSize: string;
+  serviceType?: string;
+  notes?: string;
+  source: AppointmentSource;
+}):
+  | { ok: true; appointment: Appointment }
+  | { ok: false; error: string; availableSlots: string[] } {
+  const availability = buildStaticAvailability(62);
+  const day = availability.days.find((d) => d.date === input.date);
+  if (!day) {
+    return {
+      ok: false,
+      error: 'Selected date is outside the open booking window.',
+      availableSlots: [],
+    };
+  }
+  if (!day.openSlots.includes(input.timeSlot)) {
+    return {
+      ok: false,
+      error: 'That time slot is no longer available.',
+      availableSlots: day.openSlots,
+    };
+  }
+
+  const slotDef = STATIC_SITE_VISIT_SLOTS.find((s) => s.id === input.timeSlot);
+  const appointment: Appointment = {
+    id: `ML-${Date.now().toString(36).slice(-5).toUpperCase()}`,
+    date: input.date,
+    timeSlot: input.timeSlot,
+    timeSlotLabel: slotDef?.labelEn ?? input.timeSlot,
+    clientName: input.clientName.trim(),
+    clientPhone: input.clientPhone.trim(),
+    clientEmail: input.clientEmail?.trim() || undefined,
+    propertyAddress: input.propertyAddress.trim(),
+    lotSize: input.lotSize.trim() || 'TBD',
+    serviceType: input.serviceType?.trim() || 'Forestry Mulching & Brush Clearing',
+    notes: input.notes?.trim() || undefined,
+    source: input.source,
+    status: 'pending',
+    createdAt: new Date().toISOString(),
+  };
+
+  const store = readStaticStore();
+  store.appointments.unshift(appointment);
+
+  const sourceLabelEn = input.source === 'sarah' ? 'Jessica AI' : 'Web Calendar';
+  const sourceLabelEs = input.source === 'sarah' ? 'Jessica IA' : 'Calendario Web';
+  const notification: OwnerNotification = {
+    id: `notif-${Date.now()}`,
+    appointmentId: appointment.id,
+    type: 'new_booking',
+    titleEn: `New Site Visit (${sourceLabelEn})`,
+    titleEs: `Nueva Visita Agendada (${sourceLabelEs})`,
+    messageEn: `${appointment.clientName} · ${appointment.date} (${appointment.timeSlotLabel}) · ${appointment.propertyAddress}`,
+    messageEs: `${appointment.clientName} · ${appointment.date} (${appointment.timeSlotLabel}) · ${appointment.propertyAddress}`,
+    source: input.source,
+    read: false,
+    createdAt: appointment.createdAt,
+  };
+  store.notifications.unshift(notification);
+  writeStaticStore(store);
+
+  return { ok: true, appointment };
+}
+
+export function getStaticOwnerAuthStatus(): { configuredViaEnv: boolean; claimed: boolean } {
+  const store = readStaticStore();
+  return {
+    configuredViaEnv: false,
+    claimed: Boolean(store.ownerPasscode),
+  };
+}
+
+export function claimStaticOwnerPasscode(passcode: string): { ok: true; token: string } | { ok: false; error: string } {
+  const trimmed = passcode.trim();
+  if (trimmed.length < 4) {
+    return { ok: false, error: 'Passcode must be at least 4 characters.' };
+  }
+  const store = readStaticStore();
+  if (store.ownerPasscode) {
+    return { ok: false, error: 'Owner passcode already configured.' };
+  }
+  store.ownerPasscode = trimmed;
+  writeStaticStore(store);
+  return { ok: true, token: 'static-owner-session' };
+}
+
+export function verifyStaticOwnerPasscode(passcode: string): { ok: true; token: string } | { ok: false; error: string } {
+  const store = readStaticStore();
+  if (!store.ownerPasscode || passcode.trim() !== store.ownerPasscode) {
+    return { ok: false, error: 'Incorrect passcode.' };
+  }
+  return { ok: true, token: 'static-owner-session' };
+}
+
+export function getStaticOwnerDashboard(): {
+  todayIso: string;
+  appointments: Appointment[];
+  notifications: OwnerNotification[];
+  unreadCount: number;
+  blockedDates: string[];
+  blockedSlots: Record<string, string[]>;
+  slots: TimeSlotDef[];
+} {
+  const store = readStaticStore();
+  return {
+    todayIso: getEasternTodayIso(),
+    appointments: [...store.appointments].sort((a, b) =>
+      `${a.date} ${a.timeSlot}`.localeCompare(`${b.date} ${b.timeSlot}`)
+    ),
+    notifications: store.notifications,
+    unreadCount: store.notifications.filter((n) => !n.read).length,
+    blockedDates: store.blockedDates,
+    blockedSlots: store.blockedSlots,
+    slots: STATIC_SITE_VISIT_SLOTS,
+  };
+}
+
+export function updateStaticAppointmentStatus(id: string, status: AppointmentStatus): void {
+  const store = readStaticStore();
+  store.appointments = store.appointments.map((apt) =>
+    apt.id === id ? { ...apt, status } : apt
+  );
+  writeStaticStore(store);
+}
+
+export function deleteStaticAppointment(id: string): void {
+  const store = readStaticStore();
+  store.appointments = store.appointments.filter((apt) => apt.id !== id);
+  store.notifications = store.notifications.filter((n) => n.appointmentId !== id);
+  writeStaticStore(store);
+}
+
+export function toggleStaticBlockedDate(date: string): void {
+  const store = readStaticStore();
+  if (store.blockedDates.includes(date)) {
+    store.blockedDates = store.blockedDates.filter((d) => d !== date);
+  } else {
+    store.blockedDates.push(date);
+  }
+  writeStaticStore(store);
+}
+
+export function toggleStaticBlockedSlot(date: string, timeSlot: string): void {
+  const store = readStaticStore();
+  const current = Array.isArray(store.blockedSlots[date]) ? store.blockedSlots[date] : [];
+  if (current.includes(timeSlot)) {
+    store.blockedSlots[date] = current.filter((s) => s !== timeSlot);
+  } else {
+    store.blockedSlots[date] = [...current, timeSlot];
+  }
+  writeStaticStore(store);
+}
+
+export function markStaticNotificationsRead(): void {
+  const store = readStaticStore();
+  store.notifications = store.notifications.map((n) => ({ ...n, read: true }));
+  writeStaticStore(store);
 }
 
 export interface Appointment {

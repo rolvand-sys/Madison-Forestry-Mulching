@@ -20,7 +20,10 @@ import { useCallModal } from '../context/CallContext';
 import { useCms } from '../context/CmsContext';
 import {
   Appointment,
+  STATIC_SITE_VISIT_SLOTS,
   buildGoogleCalendarUrl,
+  buildStaticAvailability,
+  createStaticAppointment,
   formatDateHuman,
   getIcsDownloadUrl,
   isStaticPagesHost,
@@ -147,17 +150,110 @@ function detectSpanishReply(text: string, fallbackLang: 'en' | 'es'): 'en-US' | 
   return fallbackLang === 'es' ? 'es-US' : 'en-US';
 }
 
-function buildOfflineJessicaReply(
+function waitChatPause(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function calcTypingDelayMs(bubbleText: string, isFirstBubble: boolean): number {
+  const base = isFirstBubble ? 850 : 700;
+  const perChar = Math.min(850, bubbleText.length * 10);
+  return base + perChar;
+}
+
+function splitIntoChatBubbles(rawText: string): string[] {
+  const clean = rawText.trim();
+  if (!clean) return [];
+
+  if (clean.includes('|||')) {
+    const parts = clean
+      .split('|||')
+      .map((p) => p.trim())
+      .filter(Boolean);
+    if (parts.length > 0) return parts;
+  }
+
+  const paragraphs = clean
+    .split(/\n{2,}/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (paragraphs.length > 1) {
+    return paragraphs;
+  }
+
+  return [clean];
+}
+
+interface BookingDraftState {
+  active: boolean;
+  date?: string;
+  timeSlot?: string;
+  clientName?: string;
+  clientPhone?: string;
+  propertyAddress?: string;
+  lotSize?: string;
+  awaitingField?: 'date_time' | 'name' | 'phone' | 'address' | 'lotSize' | 'details';
+}
+
+function formatSlotShort(slotId: string): string {
+  const map: Record<string, string> = {
+    '09:00': '9:00 AM',
+    '11:00': '11:00 AM',
+    '13:30': '1:30 PM',
+    '15:30': '3:30 PM',
+  };
+  return map[slotId] ?? slotId;
+}
+
+function extractAcresLabel(q: string): string | undefined {
+  if (/(1\/4|0\.25\b|quarter|cuarto\s+de\s+acre)/.test(q)) return '1/4 Acre';
+  if (/(1\/2|0\.5\b|half\s+acre|medio\s+acre)/.test(q)) return '1/2 Acre';
+  const match = q.match(/(\d+(?:\.\d+)?)\s*(?:acres?|ac\b)/i);
+  if (match) {
+    const val = Number(match[1]);
+    if (Number.isFinite(val) && val > 0) {
+      return `${Number.isInteger(val) ? val : val.toString()} Acres`;
+    }
+  }
+  return undefined;
+}
+
+function resolveOfflineJessicaResponse(
   userText: string,
   cms: SiteCmsData,
   fallbackLang: 'en' | 'es',
-  isFirstTurn: boolean
-): string {
-  const q = userText.toLowerCase().trim();
-  const isEs = detectSpanishReply(userText, fallbackLang) === 'es-US';
+  isFirstTurn: boolean,
+  draft: BookingDraftState
+): {
+  bubbles: string[];
+  nextDraft: BookingDraftState;
+  bookedAppointment?: Appointment;
+} {
+  const raw = userText.trim();
+  const q = raw.toLowerCase();
+  const isEs = detectSpanishReply(raw, fallbackLang) === 'es-US';
   const biz = cms.business;
   const pricing = cms.pricing;
   const discountPct = Math.round(pricing.bulkDiscountRate * 100);
+
+  const detectedLot = extractAcresLabel(q);
+  const workingDraft: BookingDraftState = {
+    ...draft,
+    lotSize: detectedLot ?? draft.lotSize,
+  };
+
+  const isCancelBooking =
+    workingDraft.active &&
+    /\b(cancelar\s+reserva|cancel\s+booking|no\s+quiero\s+agendar|olv[ií]dalo|mejor\s+luego)\b/i.test(
+      q
+    );
+  if (isCancelBooking) {
+    return {
+      bubbles: isEs
+        ? ['Sin problema, cancelamos el borrador de la cita. Aquí sigo por si necesitas precios o información.']
+        : ['No problem—cancelled the booking draft. Let me know if you need pricing or anything else!'],
+      nextDraft: { active: false, lotSize: workingDraft.lotSize },
+    };
+  }
 
   const isPureGreeting =
     /^(hola|hi|hello|hey|buenos d[ií]as|buenas tardes|buenas noches|good morning|good afternoon|qu[eé] tal)[!.\s]*$/i.test(
@@ -165,12 +261,17 @@ function buildOfflineJessicaReply(
     );
 
   const asksSchedule =
-    /(book|schedul|visit|date|calendar|reserv|appoint|walk[\s-]*through|evalua|agend|cita|visita|fecha|calendario|programar|apartar|disponib)/i.test(
+    /(book|schedul|visit|date|calendar|reserv|appoint|walk[\s-]*through|evalua|agend|cita|visita|fecha|calendario|programar|apartar|disponib|horarios?\s+libres|d[ií]as?\s+libres)/i.test(
       q
     );
 
   const asksPrice =
-    /(price|cost|quote|estimat|how much|acre|palmetto|brush|stump|driveway|cu[aá]nto|precio|cotiz|estimar|palma|maleza|toc[oó]n|tocon|descuento|limpiar|desmont)/i.test(
+    /(price|cost|quote|estimat|how much|cu[aá]nto|precio|cotiz|estimar|descuento|limpiar\s+mi|desmont)/i.test(
+      q
+    ) || (!workingDraft.active && /\b(acre|acres|palmetto|palma|maleza)\b/i.test(q));
+
+  const asksEquipmentOrServices =
+    /(service|servicio|equip|machine|skid|asv|baumalight|m[aá]quina|storm|hurricane|tormenta|hurac[aá]n|cerca|fence|camino|trail|grind|rebaj|toc[oó]n)/i.test(
       q
     );
 
@@ -179,113 +280,519 @@ function buildOfflineJessicaReply(
       q
     );
 
-  const introEs = isFirstTurn
-    ? `¡Hola! Soy ${biz.assistantName} de ${biz.businessName}. `
-    : '';
-  const introEn = isFirstTurn
-    ? `Hi! I'm ${biz.assistantName} with ${biz.businessName}. `
-    : '';
+  // Detect date / slot clues in message
+  const availability = buildStaticAvailability(21);
+  const openDays = availability.days.filter((d) => d.openSlots.length > 0);
 
-  if (isPureGreeting) {
-    return isEs
-      ? `¡Hola! Soy ${biz.assistantName} de ${biz.businessName} (${biz.cityState}). Puedo darte un estimado preliminar según tus acres, explicarte nuestros servicios en el Norte de Florida y Quitman/Valdosta, GA, o indicarte cómo agendar una evaluación gratuita con ${biz.ownerName}. ¿En qué te ayudo hoy?`
-      : `Hi there! I'm ${biz.assistantName} with ${biz.businessName} (${biz.cityState}). I can give you a preliminary acreage estimate, share details on our North Florida & Quitman/Valdosta, GA services, or help you schedule a free site walk with ${biz.ownerName}. How can I help today?`;
+  let parsedDate: string | undefined;
+  let weekendRequested = false;
+
+  if (/(s[aá]bado|sabado|domingo|saturday|sunday)/i.test(q)) {
+    weekendRequested = true;
   }
 
-  if (asksSchedule) {
-    return isEs
-      ? `${introEs}Para reservar tu evaluación gratuita en sitio con ${biz.ownerName}, tienes dos opciones fáciles:\n\n1. En esta misma página: baja a la sección "Agenda Tu Evaluación en Sitio" (o toca "Agendar Visita" en el menú superior), elige un día disponible de lunes a viernes y un bloque horario (martes de 12:00 PM a 5:00 PM), completa tus datos y confirma.\n2. Por teléfono: llámanos directamente al ${biz.phone}.\n\nAl confirmar podrás guardar el recordatorio en tu calendario (.ics o Google Calendar).`
-      : `${introEn}You can book your free on-site evaluation with ${biz.ownerName} in two easy ways:\n\n1. Right on this page: click "Site Visit" in the top menu (or scroll to "Schedule a Property Site Evaluation"), select an open Mon–Fri date and arrival window (Tuesdays 12:00 PM–5:00 PM), enter your property details, and confirm.\n2. By phone: call us directly at ${biz.phone}.\n\nOnce confirmed, you can save the appointment straight to Google Calendar or download an .ics invite.`;
-  }
-
-  if (asksPrice) {
-    let customAcres: number | null = null;
-    if (/(1\/4|0\.25|quarter|cuarto)/.test(q)) customAcres = 0.25;
-    else if (/(1\/2|0\.5\b|half|medio)/.test(q)) customAcres = 0.5;
-    else {
-      const acreMatch = q.match(/(\d+(?:\.\d+)?)\s*(?:acres?|ac\b)/i);
-      if (acreMatch) {
-        const parsed = Number(acreMatch[1]);
-        if (Number.isFinite(parsed) && parsed > 0) {
-          customAcres = parsed;
-        }
-      } else if (/(5\+|bulk|volumen|finca|40\b)/.test(q)) {
-        customAcres = 5;
+  const isoMatch = q.match(/\b(\d{4}-\d{2}-\d{2})\b/);
+  if (isoMatch) {
+    parsedDate = isoMatch[1];
+  } else if (/\b(pasado\s+ma[ñn]ana|day\s+after\s+tomorrow)\b/i.test(q)) {
+    const [y, m, d] = availability.todayIso.split('-').map(Number);
+    parsedDate = new Date(Date.UTC(y, m - 1, d + 2, 12, 0, 0)).toISOString().slice(0, 10);
+  } else if (/\b(ma[ñn]ana|tomorrow)\b/i.test(q) && !/de\s+la\s+ma[ñn]ana|en\s+la\s+ma[ñn]ana/i.test(q)) {
+    const [y, m, d] = availability.todayIso.split('-').map(Number);
+    parsedDate = new Date(Date.UTC(y, m - 1, d + 1, 12, 0, 0)).toISOString().slice(0, 10);
+  } else {
+    const weekdayTargets: Array<{ regex: RegExp; dow: number }> = [
+      { regex: /\b(lunes|monday|mon)\b/i, dow: 1 },
+      { regex: /\b(martes|tuesday|tue)\b/i, dow: 2 },
+      { regex: /\b(mi[eé]rcoles|miercoles|wednesday|wed)\b/i, dow: 3 },
+      { regex: /\b(jueves|thursday|thu)\b/i, dow: 4 },
+      { regex: /\b(viernes|friday|fri)\b/i, dow: 5 },
+    ];
+    const matchedDow = weekdayTargets.find((w) => w.regex.test(q));
+    if (matchedDow) {
+      const candidate =
+        openDays.find((d) => d.dayOfWeek === matchedDow.dow) ??
+        availability.days.find((d) => d.date > availability.todayIso && d.dayOfWeek === matchedDow.dow);
+      if (candidate) parsedDate = candidate.date;
+    } else {
+      const dayNumMatch = q.match(
+        /(?:\bel\s+|\bd[ií]a\s+|\bnov\.?\s+|\bdic\.?\s+|\bdec\.?\s+|\bene\.?\s+|\bjan\.?\s+)(\d{1,2})\b/i
+      );
+      if (dayNumMatch) {
+        const targetDayNum = Number(dayNumMatch[1]);
+        const foundDay = availability.days.find(
+          (d) => d.date > availability.todayIso && Number(d.date.slice(8, 10)) === targetDayNum
+        );
+        if (foundDay) parsedDate = foundDay.date;
       }
     }
-
-    let densityId = 'medium';
-    if (/(heavy|timber|storm|hurricane|tormenta|hurac[aá]n|denso|cerrad|bosque)/.test(q)) {
-      densityId = 'heavy';
-    } else if (/(light|weed|liger|pasto|hierba)/.test(q)) {
-      densityId = 'light';
-    }
-
-    const denObj = pricing.densities.find((d) => d.id === densityId) ?? pricing.densities[1] ?? pricing.densities[0];
-
-    let areaLabelEs = '1 Acre';
-    let areaLabelEn = '1 Acre';
-    let estMin = 0;
-    let estMax = 0;
-    let hasBulk = false;
-
-    const matchingLot =
-      customAcres !== null
-        ? pricing.lotSizes.find((l) => !l.isFivePlus && Math.abs(l.acres - customAcres!) < 0.01)
-        : pricing.lotSizes.find((l) => l.id === '1.00') ?? pricing.lotSizes[0];
-
-    if (matchingLot && (customAcres === null || customAcres < 5)) {
-      const est = calculateDynamicLotEstimate(pricing, matchingLot.id, densityId, []);
-      areaLabelEs = matchingLot.labelEs;
-      areaLabelEn = matchingLot.labelEn;
-      estMin = est.totalMin;
-      estMax = est.totalMax;
-      hasBulk = est.hasBulkDiscount;
-    } else if (customAcres !== null) {
-      const rawMin = Math.round(denObj.perAcreRange[0] * customAcres);
-      const rawMax = Math.round(denObj.perAcreRange[1] * customAcres);
-      hasBulk = customAcres >= 5 && pricing.bulkDiscountRate > 0;
-      const factor = hasBulk ? 1 - pricing.bulkDiscountRate : 1;
-      estMin = Math.max(pricing.minimumMobilizationFee, Math.round(rawMin * factor));
-      estMax = Math.max(estMin, Math.round(rawMax * factor));
-      const formattedAcres = Number.isInteger(customAcres) ? String(customAcres) : customAcres.toString();
-      areaLabelEs = `${formattedAcres} Acres`;
-      areaLabelEn = `${formattedAcres} Acres`;
-    } else {
-      const est = calculateDynamicLotEstimate(pricing, '1.00', densityId, []);
-      estMin = est.totalMin;
-      estMax = est.totalMax;
-      hasBulk = est.hasBulkDiscount;
-    }
-
-    const addonsListEs = pricing.addons
-      .map((a) => `${a.labelEs} (+$${a.price.toLocaleString()})`)
-      .join(', ');
-    const addonsListEn = pricing.addons
-      .map((a) => `${a.labelEn} (+$${a.price.toLocaleString()})`)
-      .join(', ');
-
-    const bulkNoteEs = hasBulk
-      ? ` (incluye ${discountPct}% de descuento por volumen en 5+ acres)`
-      : ` (tarifa mínima de movilización $${pricing.minimumMobilizationFee.toLocaleString()}, y lotes de 5+ acres reciben ${discountPct}% de descuento)`;
-    const bulkNoteEn = hasBulk
-      ? ` (includes ${discountPct}% bulk discount for 5+ acres)`
-      : ` ($${pricing.minimumMobilizationFee.toLocaleString()} minimum mobilization applies, and 5+ acres get ${discountPct}% off)`;
-
-    return isEs
-      ? `${introEs}Para ${areaLabelEs} con ${denObj.labelEs}, el estimado preliminar es de $${estMin.toLocaleString()} – $${estMax.toLocaleString()} USD${bulkNoteEs}.\n\nOpcionales: ${addonsListEs}.\nTambién puedes ajustar estos valores en el Cotizador de la página o llamarnos al ${biz.phone} para confirmar sin costo en sitio.`
-      : `${introEn}For ${areaLabelEn} of ${denObj.labelEn}, a preliminary estimate is $${estMin.toLocaleString()} – $${estMax.toLocaleString()} USD${bulkNoteEn}.\n\nOptional add-ons: ${addonsListEn}.\nYou can also fine-tune this in our on-page Lot Estimator or call ${biz.phone} for a free on-site walkthrough.`;
   }
 
-  if (asksHoursOrAddress) {
-    return isEs
-      ? `${introEs}Operamos desde ${biz.cityState} bajo la dirección de ${biz.ownerName} (Tel: ${biz.phone}).\nHorario: ${biz.operatingHours.es}.\nÁrea de servicio: ${biz.serviceArea}.`
-      : `${introEn}We are based at ${biz.cityState}, led by ${biz.ownerName} (Phone: ${biz.phone}).\nHours: ${biz.operatingHours.en}.\nService area: ${biz.serviceArea}.`;
+  let parsedSlot: string | undefined;
+  if (/\b(?:0?9:00|9\s*(?:am|a\.m\.|hrs?|horas?|de\s+la\s+ma[ñn]ana))\b/i.test(q) || /(?:a\s+las?|at)\s+0?9\b/i.test(q)) {
+    parsedSlot = '09:00';
+  } else if (/\b(?:11:00|11\s*(?:am|a\.m\.|hrs?|horas?|de\s+la\s+ma[ñn]ana))\b/i.test(q) || /(?:a\s+las?|at)\s+11\b/i.test(q)) {
+    parsedSlot = '11:00';
+  } else if (
+    /\b(?:13:30|1:30|13:00|1\s*(?:pm|p\.m\.|de\s+la\s+tarde)|2\s*(?:pm|p\.m\.))\b/i.test(q) ||
+    /(?:a\s+la|at)\s+1(?::30)?\b/i.test(q)
+  ) {
+    parsedSlot = '13:30';
+  } else if (
+    /\b(?:15:30|3:30|15:00|3\s*(?:pm|p\.m\.|de\s+la\s+tarde)|4\s*(?:pm|p\.m\.))\b/i.test(q) ||
+    /(?:a\s+las?|at)\s+3(?::30)?\b/i.test(q)
+  ) {
+    parsedSlot = '15:30';
   }
 
-  return isEs
-    ? `${introEs}Estamos en ${biz.cityState} (${biz.phone}) y cubrimos ${biz.serviceArea}. Trabajamos con tarifa mínima de $${pricing.minimumMobilizationFee.toLocaleString()} y ${discountPct}% de descuento en 5+ acres. Pregúntame por el tamaño de tu terreno (ej. "2.5 acres"), servicios, horarios o cómo agendar tu evaluación gratuita.`
-    : `${introEn}We're located at ${biz.cityState} (${biz.phone}) serving ${biz.serviceArea}. Our minimum mobilization is $${pricing.minimumMobilizationFee.toLocaleString()} with ${discountPct}% off 5+ acres. Ask me about pricing for your acreage (e.g. "2.5 acres"), services, hours, or how to book a free site visit!`;
+  const hasBookingSignals = Boolean(parsedDate || parsedSlot || weekendRequested);
+
+  // Handle pure non-booking questions when NOT inside an active booking flow (unless user explicitly switched topic)
+  if (!workingDraft.active && !asksSchedule && !hasBookingSignals) {
+    if (isPureGreeting) {
+      return {
+        bubbles: isEs
+          ? [
+              `¡Hola! Soy ${biz.assistantName} de ${biz.businessName}.`,
+              `¿En qué te puedo ayudar hoy? Puedo darte un estimado por acres o revisar horarios disponibles para una evaluación gratis con ${biz.ownerName}.`,
+            ]
+          : [
+              `Hi there! I'm ${biz.assistantName} with ${biz.businessName}.`,
+              `How can I help today? I can share an acreage estimate or check open slots for a free site evaluation with ${biz.ownerName}.`,
+            ],
+        nextDraft: workingDraft,
+      };
+    }
+
+    if (asksPrice) {
+      let customAcres: number | null = null;
+      if (/(1\/4|0\.25|quarter|cuarto)/.test(q)) customAcres = 0.25;
+      else if (/(1\/2|0\.5\b|half|medio)/.test(q)) customAcres = 0.5;
+      else {
+        const acreMatch = q.match(/(\d+(?:\.\d+)?)\s*(?:acres?|ac\b)/i);
+        if (acreMatch) {
+          const parsed = Number(acreMatch[1]);
+          if (Number.isFinite(parsed) && parsed > 0) customAcres = parsed;
+        } else if (/(5\+|bulk|volumen|finca|40\b)/.test(q)) {
+          customAcres = 5;
+        }
+      }
+
+      let densityId = 'medium';
+      if (/(heavy|timber|storm|hurricane|tormenta|hurac[aá]n|denso|cerrad|bosque)/.test(q)) {
+        densityId = 'heavy';
+      } else if (/(light|weed|liger|pasto|hierba)/.test(q)) {
+        densityId = 'light';
+      }
+
+      const denObj =
+        pricing.densities.find((d) => d.id === densityId) ??
+        pricing.densities[1] ??
+        pricing.densities[0];
+
+      let areaLabelEs = '1 Acre';
+      let areaLabelEn = '1 Acre';
+      let estMin = 0;
+      let estMax = 0;
+      let hasBulk = false;
+
+      const matchingLot =
+        customAcres !== null
+          ? pricing.lotSizes.find((l) => !l.isFivePlus && Math.abs(l.acres - customAcres!) < 0.01)
+          : pricing.lotSizes.find((l) => l.id === '1.00') ?? pricing.lotSizes[0];
+
+      if (matchingLot && (customAcres === null || customAcres < 5)) {
+        const est = calculateDynamicLotEstimate(pricing, matchingLot.id, densityId, []);
+        areaLabelEs = matchingLot.labelEs;
+        areaLabelEn = matchingLot.labelEn;
+        estMin = est.totalMin;
+        estMax = est.totalMax;
+        hasBulk = est.hasBulkDiscount;
+      } else if (customAcres !== null) {
+        const rawMin = Math.round(denObj.perAcreRange[0] * customAcres);
+        const rawMax = Math.round(denObj.perAcreRange[1] * customAcres);
+        hasBulk = customAcres >= 5 && pricing.bulkDiscountRate > 0;
+        const factor = hasBulk ? 1 - pricing.bulkDiscountRate : 1;
+        estMin = Math.max(pricing.minimumMobilizationFee, Math.round(rawMin * factor));
+        estMax = Math.max(estMin, Math.round(rawMax * factor));
+        const formattedAcres = Number.isInteger(customAcres)
+          ? String(customAcres)
+          : customAcres.toString();
+        areaLabelEs = `${formattedAcres} Acres`;
+        areaLabelEn = `${formattedAcres} Acres`;
+      } else {
+        const est = calculateDynamicLotEstimate(pricing, '1.00', densityId, []);
+        estMin = est.totalMin;
+        estMax = est.totalMax;
+        hasBulk = est.hasBulkDiscount;
+      }
+
+      const firstPrefixEs = isFirstTurn ? `¡Hola! Soy ${biz.assistantName}. ` : '';
+      const firstPrefixEn = isFirstTurn ? `Hi! I'm ${biz.assistantName}. ` : '';
+      const stumpAddon = pricing.addons.find((a) => a.id === 'stumps');
+      const drivewayAddon = pricing.addons.find((a) => a.id === 'driveway');
+
+      return {
+        bubbles: [
+          isEs
+            ? `${firstPrefixEs}Para ${areaLabelEs} (${denObj.labelEs}), el estimado preliminar ronda los $${estMin.toLocaleString()} – $${estMax.toLocaleString()} USD.`
+            : `${firstPrefixEn}For ${areaLabelEn} (${denObj.labelEn}), a preliminary ballpark estimate is $${estMin.toLocaleString()} – $${estMax.toLocaleString()} USD.`,
+          isEs
+            ? hasBulk
+              ? `Ya incluye nuestro ${discountPct}% de descuento por 5+ acres (mínimo $${pricing.minimumMobilizationFee.toLocaleString()}).`
+              : `La tarifa mínima es $${pricing.minimumMobilizationFee.toLocaleString()} (5+ acres tienen ${discountPct}% de descuento)${stumpAddon && drivewayAddon ? `, y extras como tocones (+$${stumpAddon.price}) o entrada (+$${drivewayAddon.price}) son opcionales.` : '.'}`
+            : hasBulk
+            ? `That already includes our ${discountPct}% bulk discount for 5+ acres ($${pricing.minimumMobilizationFee.toLocaleString()} minimum).`
+            : `Our $${pricing.minimumMobilizationFee.toLocaleString()} minimum applies (5+ acres get ${discountPct}% off)${stumpAddon && drivewayAddon ? `, and extras like stumps (+$${stumpAddon.price}) or driveway cut-ins (+$${drivewayAddon.price}) are optional.` : '.'}`,
+          isEs
+            ? `¿Te gustaría que revisemos fechas libres aquí mismo para agendar una evaluación gratis en sitio?`
+            : `Would you like me to check our open dates right here to book a free on-site evaluation?`,
+        ],
+        nextDraft: workingDraft,
+      };
+    }
+
+    if (asksEquipmentOrServices) {
+      return {
+        bubbles: isEs
+          ? [
+              `Usamos un cargador sobre orugas ASV RT-135 con cabezal Baumalight: trituramos maleza, palmetto, cercas, tocones y árboles caídos sin quemas.`,
+              `¿Qué trabajo necesitas hacer y cuántos acres tiene tu propiedad?`,
+            ]
+          : [
+              `We run a high-flow ASV RT-135 track loader with a Baumalight mulcher—clearing brush, palmetto, fence lines, stumps & storm debris with no burning.`,
+              `What kind of clearing do you need, and roughly how many acres?`,
+            ],
+        nextDraft: workingDraft,
+      };
+    }
+
+    if (asksHoursOrAddress) {
+      return {
+        bubbles: isEs
+          ? [
+              `Estamos en ${biz.cityState} (Tel: ${biz.phone}). Atendemos Lun, Mié–Vie 9 AM–5 PM y Mar 12–5 PM.`,
+              `Cubrimos ${biz.serviceArea}. ¿En qué zona está tu terreno?`,
+            ]
+          : [
+              `We're based at ${biz.cityState} (Phone: ${biz.phone}), open Mon, Wed–Fri 9 AM–5 PM & Tue 12–5 PM.`,
+              `We cover ${biz.serviceArea}. Where is your property located?`,
+            ],
+        nextDraft: workingDraft,
+      };
+    }
+
+    return {
+      bubbles: isEs
+        ? [
+            `Puedo darte un estimado por acres o consultar nuestra agenda en vivo para reservarte una evaluación gratis.`,
+            `¿Cuántos acres tiene tu terreno o qué día te gustaría que lo visitemos?`,
+          ]
+        : [
+            `I can share an acreage estimate or check our live calendar to book a free site visit for you.`,
+            `How many acres is your property, or which day would you like us to come out?`,
+          ],
+      nextDraft: workingDraft,
+    };
+  }
+
+  // --- INTERACTIVE AGENDA & BOOKING FLOW ---
+  workingDraft.active = true;
+
+  const formatUpcomingOptions = (limit = 4) =>
+    openDays
+      .slice(0, limit)
+      .map((d) => {
+        const label = formatDateHuman(d.date, isEs ? 'es' : 'en');
+        const times = d.openSlots.map(formatSlotShort).join(', ');
+        return `• ${label}: ${times}`;
+      })
+      .join('\n');
+
+  if (weekendRequested && !parsedDate) {
+    return {
+      bubbles: isEs
+        ? [
+            `Los sábados y domingos permanecemos cerrados.`,
+            `Estos son los próximos días libres en nuestra agenda:\n${formatUpcomingOptions(3)}`,
+            `¿Cuál día y horario te queda mejor?`,
+          ]
+        : [
+            `We're closed on Saturdays and Sundays.`,
+            `Here are our next open Mon–Fri dates:\n${formatUpcomingOptions(3)}`,
+            `Which day and time window works best for you?`,
+          ],
+      nextDraft: { ...workingDraft, awaitingField: 'date_time' },
+    };
+  }
+
+  // Validate / assign date if provided
+  if (parsedDate) {
+    const dayInfo = availability.days.find((d) => d.date === parsedDate);
+    if (!dayInfo || dayInfo.openSlots.length === 0) {
+      return {
+        bubbles: isEs
+          ? [
+              `El ${formatDateHuman(parsedDate, 'es')} no tiene horarios disponibles.`,
+              `Próximas fechas libres:\n${formatUpcomingOptions(3)}`,
+              `¿Cuál prefieres?`,
+            ]
+          : [
+              `${formatDateHuman(parsedDate, 'en')} doesn't have any open slots.`,
+              `Here are the next open days:\n${formatUpcomingOptions(3)}`,
+              `Which one works for you?`,
+            ],
+        nextDraft: { ...workingDraft, date: undefined, timeSlot: undefined, awaitingField: 'date_time' },
+      };
+    }
+    workingDraft.date = parsedDate;
+  }
+
+  // Validate / assign timeSlot if provided
+  if (parsedSlot) {
+    if (workingDraft.date) {
+      const dayInfo = availability.days.find((d) => d.date === workingDraft.date);
+      if (dayInfo && !dayInfo.openSlots.includes(parsedSlot)) {
+        const altSlots = dayInfo.openSlots.map(formatSlotShort).join(', ');
+        return {
+          bubbles: isEs
+            ? [
+                `Ese horario (${formatSlotShort(parsedSlot)}) ya no está libre el ${formatDateHuman(workingDraft.date, 'es')}.`,
+                `Ese día aún quedan disponibles: ${altSlots}. ¿Cuál prefieres?`,
+              ]
+            : [
+                `${formatSlotShort(parsedSlot)} isn't open on ${formatDateHuman(workingDraft.date, 'en')}.`,
+                `Still open that day: ${altSlots}. Which time would you like?`,
+              ],
+          nextDraft: { ...workingDraft, timeSlot: undefined, awaitingField: 'date_time' },
+        };
+      }
+    }
+    workingDraft.timeSlot = parsedSlot;
+  } else if (workingDraft.date && !workingDraft.timeSlot) {
+    const dayInfo = availability.days.find((d) => d.date === workingDraft.date);
+    if (dayInfo && /\b(ma[ñn]ana|morning)\b/i.test(q)) {
+      const amSlot = dayInfo.openSlots.find((s) => s === '09:00' || s === '11:00');
+      if (amSlot) workingDraft.timeSlot = amSlot;
+    } else if (dayInfo && /\b(tarde|afternoon)\b/i.test(q)) {
+      const pmSlot = dayInfo.openSlots.find((s) => s === '13:30' || s === '15:30');
+      if (pmSlot) workingDraft.timeSlot = pmSlot;
+    }
+  }
+
+  // Extract phone number (avoid colliding with ISO date)
+  const withoutDates = raw.replace(/\b\d{4}-\d{2}-\d{2}\b/g, ' ');
+  const phoneMatch = withoutDates.match(/(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/);
+  if (phoneMatch) {
+    workingDraft.clientPhone = phoneMatch[0].trim();
+  } else {
+    const plainDigitsMatch = withoutDates.match(/\b\d{7,11}\b/);
+    if (plainDigitsMatch) {
+      workingDraft.clientPhone = plainDigitsMatch[0].trim();
+    }
+  }
+
+  // Extract explicit name / address OR structured segments
+  const explicitNameMatch = raw.match(
+    /(?:me\s+llamo|mi\s+nombre\s+es|nombre\s*:|soy|my\s+name\s+is|i['’]?m|name\s*:)\s*([A-Za-zÁÉÍÓÚÑáéíóúñ'\s]{2,45}?)(?=[,.;\n]|$|\b(?:tel|tel[eé]fono|phone|mi\s+tel|y\s+vivo|en\s+\d|direcci[oó]n|address)\b)/i
+  );
+  if (explicitNameMatch?.[1]) {
+    workingDraft.clientName = explicitNameMatch[1].trim();
+  }
+
+  const explicitAddrMatch = raw.match(
+    /(?:direcci[oó]n\s*:|address\s*:|ubicaci[oó]n\s*:|parcela\s*:|terreno\s+en\s+|propiedad\s+en\s+|vivo\s+en\s+)\s*([^\n;]{4,80})/i
+  );
+  if (explicitAddrMatch?.[1]) {
+    const cleanedAddr = explicitAddrMatch[1]
+      .replace(/(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g, '')
+      .replace(/,\s*$/g, '')
+      .trim();
+    if (cleanedAddr.length >= 3) {
+      workingDraft.propertyAddress = cleanedAddr;
+    }
+  }
+
+  // Comma / newline split fallback when user gives "Nombre, Teléfono, Dirección, Acres"
+  const strippedForParts = raw
+    .replace(/\b\d{4}-\d{2}-\d{2}\b/g, '')
+    .replace(/(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g, '')
+    .replace(/\b\d+(?:\.\d+)?\s*(?:acres?|ac\b)/gi, '')
+    .replace(/\b(?:a\s+las?|at)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)?/gi, '')
+    .replace(/\b\d{1,2}:\d{2}\s*(?:am|pm|a\.m\.|p\.m\.)?/gi, '')
+    .replace(/\b(?:lunes|martes|mi[eé]rcoles|miercoles|jueves|viernes|monday|tuesday|wednesday|thursday|friday|ma[ñn]ana|tomorrow)\b/gi, '');
+
+  const chunks = strippedForParts
+    .split(/[,;\n|]+/)
+    .map((c) => c.trim())
+    .filter((c) => c.length >= 2);
+
+  const looksLikeAddress = (s: string) =>
+    /\d+\s+[A-Za-z]/.test(s) ||
+    /\b(rd|road|st|street|ave|avenue|ln|lane|dr|drive|hwy|blvd|ct|way|calle|av|camino|parcel|lot|madison|quitman|perry|monticello|live\s+oak|valdosta|lee|greenville|jasper|fl|ga)\b/i.test(
+      s
+    );
+
+  const looksLikePersonName = (s: string) =>
+    !/\d/.test(s) &&
+    !looksLikeAddress(s) &&
+    !/\b(quiero|agendar|cita|visita|evaluaci[oó]n|horario|reservar|book|schedule|visit|yes|si|sí|ok|claro|gracias|hola)\b/i.test(
+      s
+    ) &&
+    s.split(/\s+/).length <= 4;
+
+  for (const chunk of chunks) {
+    if (!workingDraft.propertyAddress && looksLikeAddress(chunk)) {
+      workingDraft.propertyAddress = chunk;
+    } else if (!workingDraft.clientName && looksLikePersonName(chunk)) {
+      workingDraft.clientName = chunk;
+    }
+  }
+
+  // Contextual single-field answer if Jessica specifically asked for one item
+  if (workingDraft.awaitingField === 'name' && !workingDraft.clientName && chunks[0]) {
+    workingDraft.clientName = chunks[0];
+  } else if (workingDraft.awaitingField === 'address' && !workingDraft.propertyAddress && raw.length >= 4) {
+    workingDraft.propertyAddress = raw;
+  }
+
+  // Step 1: If just asked to schedule without choosing date yet, show REAL availability from the calendar!
+  if (!workingDraft.date) {
+    if (openDays.length === 0) {
+      return {
+        bubbles: isEs
+          ? [`En este momento no hay espacios abiertos en las próximas semanas. Por favor llámanos directo al ${biz.phone}.`]
+          : [`Our calendar is currently full for the upcoming weeks. Please call ${biz.phone} directly!`],
+        nextDraft: { active: false, lotSize: workingDraft.lotSize },
+      };
+    }
+
+    const intro = isFirstTurn
+      ? isEs
+        ? `¡Hola! Soy ${biz.assistantName}. Con gusto te ayudo a agendar la evaluación gratis.`
+        : `Hi! I'm ${biz.assistantName}. I'd love to book your free site walk.`
+      : isEs
+      ? `¡Con gusto! Puedo agendarte la evaluación gratis aquí mismo.`
+      : `Sure thing! I can book your free evaluation right here.`;
+
+    return {
+      bubbles: [
+        intro,
+        isEs
+          ? `Revisé nuestra agenda y estos son los próximos espacios libres:\n${formatUpcomingOptions(3)}`
+          : `I checked our live calendar—here are our next open windows:\n${formatUpcomingOptions(3)}`,
+        isEs
+          ? `¿Qué día y hora prefieres?`
+          : `Which day and time slot works best for you?`,
+      ],
+      nextDraft: { ...workingDraft, awaitingField: 'date_time' },
+    };
+  }
+
+  // Step 2: Date chosen, need timeSlot
+  if (workingDraft.date && !workingDraft.timeSlot) {
+    const dayInfo = availability.days.find((d) => d.date === workingDraft.date);
+    const openLabels = (dayInfo?.openSlots ?? []).map(formatSlotShort).join(', ');
+    return {
+      bubbles: isEs
+        ? [
+            `¡Perfecto! El ${formatDateHuman(workingDraft.date, 'es')} tenemos disponibles: ${openLabels}.`,
+            `¿A qué hora te queda bien, y cuál es tu nombre, teléfono y dirección del terreno?`,
+          ]
+        : [
+            `Great! On ${formatDateHuman(workingDraft.date, 'en')} we have: ${openLabels}.`,
+            `Which time do you prefer, along with your name, phone number, and property address?`,
+          ],
+      nextDraft: { ...workingDraft, awaitingField: 'date_time' },
+    };
+  }
+
+  // Step 3: Date + Time chosen — check if contact & property details are still missing
+  const missingEs: string[] = [];
+  const missingEn: string[] = [];
+  if (!workingDraft.clientName) {
+    missingEs.push('nombre completo');
+    missingEn.push('full name');
+  }
+  if (!workingDraft.clientPhone) {
+    missingEs.push('teléfono');
+    missingEn.push('phone number');
+  }
+  if (!workingDraft.propertyAddress) {
+    missingEs.push('dirección o ciudad del terreno');
+    missingEn.push('property address or city');
+  }
+  if (!workingDraft.lotSize) {
+    missingEs.push('tamaño aproximado (acres)');
+    missingEn.push('approximate acreage');
+  }
+
+  if (missingEs.length > 0) {
+    const dateHuman = formatDateHuman(workingDraft.date, isEs ? 'es' : 'en');
+    const slotHuman = formatSlotShort(workingDraft.timeSlot!);
+    const nextAwait: BookingDraftState['awaitingField'] = !workingDraft.clientName
+      ? 'name'
+      : !workingDraft.clientPhone
+      ? 'phone'
+      : !workingDraft.propertyAddress
+      ? 'address'
+      : 'lotSize';
+
+    return {
+      bubbles: [
+        isEs
+          ? `Anotado: ${dateHuman} a las ${slotHuman}.`
+          : `Got it: ${dateHuman} at ${slotHuman}.`,
+        isEs
+          ? `Para dejar la cita registrada en la agenda de ${biz.ownerName}, solo dime tu ${missingEs.join(', ')}.`
+          : `To save this in ${biz.ownerName}'s agenda, please share your ${missingEn.join(', ')}.`,
+      ],
+      nextDraft: { ...workingDraft, awaitingField: nextAwait },
+    };
+  }
+
+  // Step 4: All required info present — BOOK IT IN THE SHARED CALENDAR STORE!
+  const created = createStaticAppointment({
+    date: workingDraft.date!,
+    timeSlot: workingDraft.timeSlot!,
+    clientName: workingDraft.clientName!,
+    clientPhone: workingDraft.clientPhone!,
+    propertyAddress: workingDraft.propertyAddress!,
+    lotSize: workingDraft.lotSize!,
+    source: 'sarah',
+  });
+
+  if (!created.ok) {
+    const alts = created.availableSlots.map(formatSlotShort).join(', ');
+    return {
+      bubbles: isEs
+        ? [
+            `Ese espacio se acaba de ocupar. Horarios aún disponibles ese día: ${alts || 'ninguno'}.`,
+            `¿Qué otro horario o día te gustaría elegir?`,
+          ]
+        : [
+            `That window was just taken. Open slots left that day: ${alts || 'none'}.`,
+            `Which other time or day works for you?`,
+          ],
+      nextDraft: { ...workingDraft, timeSlot: undefined, awaitingField: 'date_time' },
+    };
+  }
+
+  playNotificationChime();
+
+  return {
+    bubbles: isEs
+      ? [
+          `¡Listo, ${created.appointment.clientName}! Tu visita quedó registrada en la agenda (Ref: ${created.appointment.id}) como pendiente de confirmación por ${biz.ownerName}.`,
+          `Puedes descargar tu recordatorio o agregarlo a Google Calendar desde la tarjeta aquí abajo.`,
+        ]
+      : [
+          `All set, ${created.appointment.clientName}! Your evaluation is saved in our live agenda (Ref: ${created.appointment.id}) for ${biz.ownerName} to confirm.`,
+          `You can download your .ics reminder or add it to Google Calendar below.`,
+        ],
+    nextDraft: { active: false },
+    bookedAppointment: created.appointment,
+  };
 }
 
 export function AiReceptionistWidget() {
@@ -299,6 +806,7 @@ export function AiReceptionistWidget() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState('');
   const [isSending, setIsSending] = useState(false);
+  const [isTyping, setIsTyping] = useState(false);
   const [errorBanner, setErrorBanner] = useState('');
 
   const [voiceMuted, setVoiceMuted] = useState(false);
@@ -308,6 +816,8 @@ export function AiReceptionistWidget() {
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const chatSessionRef = useRef(0);
+  const bookingDraftRef = useRef<BookingDraftState>({ active: false });
 
   const uiCopy = useMemo(
     () =>
@@ -403,10 +913,11 @@ export function AiReceptionistWidget() {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isOpen, interimTranscript]);
+  }, [messages, isOpen, isTyping, interimTranscript]);
 
   useEffect(() => {
     return () => {
+      chatSessionRef.current += 1;
       if (recognitionRef.current) {
         try {
           recognitionRef.current.stop();
@@ -457,9 +968,42 @@ export function AiReceptionistWidget() {
     window.speechSynthesis.speak(utterance);
   };
 
+  const deliverSequencedBubbles = async (
+    bubbles: string[],
+    sessionId: number,
+    speakResponse: boolean,
+    bookedAppointment?: Appointment
+  ) => {
+    for (let i = 0; i < bubbles.length; i++) {
+      if (chatSessionRef.current !== sessionId) return;
+      setIsTyping(true);
+      await waitChatPause(calcTypingDelayMs(bubbles[i], i === 0));
+      if (chatSessionRef.current !== sessionId) return;
+      setIsTyping(false);
+      const isLast = i === bubbles.length - 1;
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `m-${Date.now()}-${i}`,
+          role: 'model',
+          text: bubbles[i],
+          isStreaming: false,
+          bookedAppointment: isLast ? bookedAppointment : undefined,
+        },
+      ]);
+    }
+
+    if (speakResponse && bubbles.length > 0 && chatSessionRef.current === sessionId) {
+      speakText(bubbles.join(' '));
+    }
+  };
+
   const sendMessage = async (textToSend: string, speakResponse = false) => {
     const trimmed = textToSend.trim();
     if (!trimmed || isSending) return;
+
+    const sessionId = chatSessionRef.current;
+    const isFirstTurn = messages.length === 0;
 
     setErrorBanner('');
     stopSpeaking();
@@ -469,36 +1013,35 @@ export function AiReceptionistWidget() {
       role: 'user',
       text: trimmed,
     };
-    const modelMsgId = `m-${Date.now() + 1}`;
-    const placeholderModelMsg: ChatMessage = {
-      id: modelMsgId,
-      role: 'model',
-      text: '',
-      isStreaming: true,
-    };
 
     const historyForApi = [...messages, userMsg].map((m) => ({
       role: m.role,
       text: m.text,
     }));
 
-    setMessages((prev) => [...prev, userMsg, placeholderModelMsg]);
+    setMessages((prev) => [...prev, userMsg]);
     setInputText('');
     setIsSending(true);
+    setIsTyping(true);
+
+    let activeModelMsgId: string | null = null;
 
     try {
       if (isStaticPagesHost()) {
-        const offlineReply = buildOfflineJessicaReply(trimmed, cms, language, messages.length === 0);
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === modelMsgId
-              ? { ...m, text: offlineReply, isStreaming: false }
-              : m
-          )
+        const offline = resolveOfflineJessicaResponse(
+          trimmed,
+          cms,
+          language,
+          isFirstTurn,
+          bookingDraftRef.current
         );
-        if (speakResponse) {
-          speakText(offlineReply);
-        }
+        bookingDraftRef.current = offline.nextDraft;
+        await deliverSequencedBubbles(
+          offline.bubbles,
+          sessionId,
+          speakResponse,
+          offline.bookedAppointment
+        );
         return;
       }
 
@@ -512,18 +1055,25 @@ export function AiReceptionistWidget() {
       });
 
       const contentType = response.headers.get('content-type') || '';
-      if (!response.ok && (response.status === 404 || !contentType.includes('application/json') && !contentType.includes('text/event-stream'))) {
-        const offlineReply = buildOfflineJessicaReply(trimmed, cms, language, messages.length === 0);
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === modelMsgId
-              ? { ...m, text: offlineReply, isStreaming: false }
-              : m
-          )
+      if (
+        !response.ok &&
+        (response.status === 404 ||
+          (!contentType.includes('application/json') && !contentType.includes('text/event-stream')))
+      ) {
+        const offline = resolveOfflineJessicaResponse(
+          trimmed,
+          cms,
+          language,
+          isFirstTurn,
+          bookingDraftRef.current
         );
-        if (speakResponse) {
-          speakText(offlineReply);
-        }
+        bookingDraftRef.current = offline.nextDraft;
+        await deliverSequencedBubbles(
+          offline.bubbles,
+          sessionId,
+          speakResponse,
+          offline.bookedAppointment
+        );
         return;
       }
 
@@ -542,14 +1092,20 @@ export function AiReceptionistWidget() {
         throw new Error('Streaming response body unavailable.');
       }
 
+      const modelMsgId = `m-${Date.now() + 1}`;
+      activeModelMsgId = modelMsgId;
+      let modelBubbleAdded = false;
+
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
       let accumulatedText = '';
+      let bookedApt: Appointment | undefined;
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        if (chatSessionRef.current !== sessionId) return;
 
         buffer += decoder.decode(value, { stream: true });
         const events = buffer.split('\n\n');
@@ -580,42 +1136,101 @@ export function AiReceptionistWidget() {
           }
 
           if (!parsed) continue;
-
-          if (parsed.error) {
-            throw new Error(parsed.error);
-          }
+          if (parsed.error) throw new Error(parsed.error);
 
           if (parsed.text) {
             accumulatedText += parsed.text;
-            setMessages((prev) =>
-              prev.map((m) => (m.id === modelMsgId ? { ...m, text: accumulatedText } : m))
-            );
+            const firstPart = accumulatedText.split('|||')[0].replace(/\|{1,2}$/, '');
+            if (!modelBubbleAdded) {
+              modelBubbleAdded = true;
+              setIsTyping(false);
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: modelMsgId,
+                  role: 'model',
+                  text: firstPart,
+                  isStreaming: true,
+                },
+              ]);
+            } else {
+              setMessages((prev) =>
+                prev.map((m) => (m.id === modelMsgId ? { ...m, text: firstPart } : m))
+              );
+            }
           }
 
           if (parsed.bookedAppointment) {
-            const booked = parsed.bookedAppointment;
-            setMessages((prev) =>
-              prev.map((m) => (m.id === modelMsgId ? { ...m, bookedAppointment: booked } : m))
-            );
+            bookedApt = parsed.bookedAppointment;
             playNotificationChime();
             window.dispatchEvent(new CustomEvent('clearview:calendar-updated'));
           }
         }
       }
 
-      setMessages((prev) =>
-        prev.map((m) => (m.id === modelMsgId ? { ...m, isStreaming: false } : m))
-      );
+      const bubbles = splitIntoChatBubbles(accumulatedText);
+      const firstBubble = bubbles[0] ?? '';
 
-      if (speakResponse && accumulatedText) {
-        speakText(accumulatedText);
+      if (modelBubbleAdded) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === modelMsgId
+              ? {
+                  ...m,
+                  text: firstBubble,
+                  isStreaming: false,
+                  bookedAppointment: bubbles.length <= 1 ? bookedApt : undefined,
+                }
+              : m
+          )
+        );
+      } else if (firstBubble || bookedApt) {
+        setIsTyping(false);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: modelMsgId,
+            role: 'model',
+            text: firstBubble,
+            isStreaming: false,
+            bookedAppointment: bubbles.length <= 1 ? bookedApt : undefined,
+          },
+        ]);
+      }
+
+      for (let i = 1; i < bubbles.length; i++) {
+        if (chatSessionRef.current !== sessionId) return;
+        setIsTyping(true);
+        await waitChatPause(calcTypingDelayMs(bubbles[i], false));
+        if (chatSessionRef.current !== sessionId) return;
+        setIsTyping(false);
+        const isLast = i === bubbles.length - 1;
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `m-${Date.now()}-${i}`,
+            role: 'model',
+            text: bubbles[i],
+            isStreaming: false,
+            bookedAppointment: isLast ? bookedApt : undefined,
+          },
+        ]);
+      }
+
+      if (speakResponse && bubbles.length > 0 && chatSessionRef.current === sessionId) {
+        speakText(bubbles.join(' '));
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unable to reach assistant.';
       setErrorBanner(msg);
-      setMessages((prev) => prev.filter((m) => m.id !== modelMsgId));
+      if (activeModelMsgId) {
+        setMessages((prev) => prev.filter((m) => m.id !== activeModelMsgId));
+      }
     } finally {
-      setIsSending(false);
+      if (chatSessionRef.current === sessionId) {
+        setIsTyping(false);
+        setIsSending(false);
+      }
     }
   };
 
@@ -716,7 +1331,11 @@ export function AiReceptionistWidget() {
   };
 
   const handleReset = () => {
+    chatSessionRef.current += 1;
+    bookingDraftRef.current = { active: false };
     stopSpeaking();
+    setIsTyping(false);
+    setIsSending(false);
     setMessages([]);
     setErrorBanner('');
     setInputText('');
@@ -1014,6 +1633,26 @@ export function AiReceptionistWidget() {
                 </div>
               );
             })}
+
+            {isTyping && (
+              <div className="flex justify-start">
+                <div
+                  aria-live="polite"
+                  className="inline-flex items-center gap-2 bg-white border border-[#DDD1C0] rounded-xl rounded-tl-sm px-3.5 py-2.5 text-xs text-neutral-600"
+                >
+                  <span>
+                    {language === 'es'
+                      ? `${biz.assistantName} está escribiendo`
+                      : `${biz.assistantName} is typing`}
+                  </span>
+                  <span className="inline-flex items-center gap-1" aria-hidden="true">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[var(--cv-primary)] animate-bounce [animation-delay:-0.25s]" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-[var(--cv-primary)] animate-bounce [animation-delay:-0.12s]" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-[var(--cv-primary)] animate-bounce" />
+                  </span>
+                </div>
+              </div>
+            )}
 
             {errorBanner && (
               <div
