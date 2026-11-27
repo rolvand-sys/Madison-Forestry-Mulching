@@ -134,10 +134,14 @@ function parseAssistantOutput(rawText: string): {
 
 function detectSpanishReply(text: string, fallbackLang: 'en' | 'es'): 'en-US' | 'es-US' {
   if (/[áéíóúñ¿¡]/i.test(text)) return 'es-US';
-  if (/\b(hola|terreno|limpieza|trituraci[oó]n|precio|visita|acres?|palma|gracias)\b/i.test(text)) {
+  if (
+    /\b(hola|terreno|limpieza|limpiar|necesito|propiedad|reserva|agendar|cita|evaluacion|horario|horarios|donde|como|cuanto|trituracion|precio|precios|visita|palma|maleza|gracias|buenos|buenas|para|una|con|que)\b/i.test(
+      text
+    )
+  ) {
     return 'es-US';
   }
-  if (/\b(hello|clearing|mulching|acre|estimate|palmetto|schedule|visit|thanks)\b/i.test(text)) {
+  if (/\b(hello|clearing|mulching|acre|estimate|palmetto|schedule|visit|thanks|how|where|price|book)\b/i.test(text)) {
     return 'en-US';
   }
   return fallbackLang === 'es' ? 'es-US' : 'en-US';
@@ -146,61 +150,142 @@ function detectSpanishReply(text: string, fallbackLang: 'en' | 'es'): 'en-US' | 
 function buildOfflineJessicaReply(
   userText: string,
   cms: SiteCmsData,
-  fallbackLang: 'en' | 'es'
+  fallbackLang: 'en' | 'es',
+  isFirstTurn: boolean
 ): string {
-  const q = userText.toLowerCase();
-  const isEs =
-    detectSpanishReply(userText, fallbackLang) === 'es-US';
+  const q = userText.toLowerCase().trim();
+  const isEs = detectSpanishReply(userText, fallbackLang) === 'es-US';
   const biz = cms.business;
   const pricing = cms.pricing;
+  const discountPct = Math.round(pricing.bulkDiscountRate * 100);
+
+  const isPureGreeting =
+    /^(hola|hi|hello|hey|buenos d[ií]as|buenas tardes|buenas noches|good morning|good afternoon|qu[eé] tal)[!.\s]*$/i.test(
+      q
+    );
+
+  const asksSchedule =
+    /(book|schedul|visit|date|calendar|reserv|appoint|walk[\s-]*through|evalua|agend|cita|visita|fecha|calendario|programar|apartar|disponib)/i.test(
+      q
+    );
+
+  const asksPrice =
+    /(price|cost|quote|estimat|how much|acre|palmetto|brush|stump|driveway|cu[aá]nto|precio|cotiz|estimar|palma|maleza|toc[oó]n|tocon|descuento|limpiar|desmont)/i.test(
+      q
+    );
 
   const asksHoursOrAddress =
-    /(hour|open|close|address|where|location|map|phone|call|horario|hora|abre|cierra|direcci[oó]n|ubicaci[oó]n|tel[eé]fono|llamar|zona|ciudad|area|serve|cubr)/i.test(
+    /(hour|open|close|address|where|location|map|phone|call|horario|hora|abre|cierra|direcci[oó]n|ubicaci[oó]n|tel[eé]fono|llamar|zona|ciudad|area|serve|cubr|donde|d[oó]nde)/i.test(
       q
     );
-  const asksSchedule = /(book|schedule|visit|date|calendar|agendar|cita|visita|fecha|calendario)/i.test(
-    q
-  );
-  const asksPrice =
-    /(price|cost|quote|estimat|how much|acre|palmetto|brush|stump|driveway|cu[aá]nto|precio|cotiz|estimar|palma|maleza|toc[oó]n|descuento)/i.test(
-      q
-    );
+
+  const introEs = isFirstTurn
+    ? `¡Hola! Soy ${biz.assistantName} de ${biz.businessName}. `
+    : '';
+  const introEn = isFirstTurn
+    ? `Hi! I'm ${biz.assistantName} with ${biz.businessName}. `
+    : '';
+
+  if (isPureGreeting) {
+    return isEs
+      ? `¡Hola! Soy ${biz.assistantName} de ${biz.businessName} (${biz.cityState}). Puedo darte un estimado preliminar según tus acres, explicarte nuestros servicios en el Norte de Florida y Quitman/Valdosta, GA, o indicarte cómo agendar una evaluación gratuita con ${biz.ownerName}. ¿En qué te ayudo hoy?`
+      : `Hi there! I'm ${biz.assistantName} with ${biz.businessName} (${biz.cityState}). I can give you a preliminary acreage estimate, share details on our North Florida & Quitman/Valdosta, GA services, or help you schedule a free site walk with ${biz.ownerName}. How can I help today?`;
+  }
 
   if (asksSchedule) {
     return isEs
-      ? `¡Hola! Soy ${biz.assistantName} de ${biz.businessName}. Atendemos evaluaciones gratuitas en terreno de lunes a viernes (martes solo de 12:00 PM a 5:00 PM; sábados y domingos cerrado). Puedes elegir tu fecha y hora directamente en la sección "Agenda tu Evaluación" arriba en la página o llamarnos al ${biz.phone}.`
-      : `Hi! I'm ${biz.assistantName} with ${biz.businessName}. We schedule free on-site evaluations Monday–Friday (Tuesdays 12:00 PM–5:00 PM only; closed Sat–Sun). You can pick an open date and arrival window right in our calendar section on this page, or call us at ${biz.phone}.`;
+      ? `${introEs}Para reservar tu evaluación gratuita en sitio con ${biz.ownerName}, tienes dos opciones fáciles:\n\n1. En esta misma página: baja a la sección "Agenda Tu Evaluación en Sitio" (o toca "Agendar Visita" en el menú superior), elige un día disponible de lunes a viernes y un bloque horario (martes de 12:00 PM a 5:00 PM), completa tus datos y confirma.\n2. Por teléfono: llámanos directamente al ${biz.phone}.\n\nAl confirmar podrás guardar el recordatorio en tu calendario (.ics o Google Calendar).`
+      : `${introEn}You can book your free on-site evaluation with ${biz.ownerName} in two easy ways:\n\n1. Right on this page: click "Site Visit" in the top menu (or scroll to "Schedule a Property Site Evaluation"), select an open Mon–Fri date and arrival window (Tuesdays 12:00 PM–5:00 PM), enter your property details, and confirm.\n2. By phone: call us directly at ${biz.phone}.\n\nOnce confirmed, you can save the appointment straight to Google Calendar or download an .ics invite.`;
   }
 
   if (asksPrice) {
-    let lotId = '1.00';
-    if (/(0\.25|quarter|cuarto)/.test(q)) lotId = '0.25';
-    else if (/(0\.5|half|medio)/.test(q)) lotId = '0.50';
-    else if (/(2\b|two|dos)/.test(q)) lotId = '2.00';
-    else if (/(5|five|cinco|10|20|40|bulk|volumen)/.test(q)) lotId = '5.00+';
+    let customAcres: number | null = null;
+    if (/(1\/4|0\.25|quarter|cuarto)/.test(q)) customAcres = 0.25;
+    else if (/(1\/2|0\.5\b|half|medio)/.test(q)) customAcres = 0.5;
+    else {
+      const acreMatch = q.match(/(\d+(?:\.\d+)?)\s*(?:acres?|ac\b)/i);
+      if (acreMatch) {
+        const parsed = Number(acreMatch[1]);
+        if (Number.isFinite(parsed) && parsed > 0) {
+          customAcres = parsed;
+        }
+      } else if (/(5\+|bulk|volumen|finca|40\b)/.test(q)) {
+        customAcres = 5;
+      }
+    }
 
     let densityId = 'medium';
-    if (/(heavy|palmetto|palma|dense|densa|cerrad)/.test(q)) densityId = 'heavy';
-    else if (/(light|weed|liger|pasto)/.test(q)) densityId = 'light';
+    if (/(heavy|timber|storm|hurricane|tormenta|hurac[aá]n|denso|cerrad|bosque)/.test(q)) {
+      densityId = 'heavy';
+    } else if (/(light|weed|liger|pasto|hierba)/.test(q)) {
+      densityId = 'light';
+    }
 
-    const est = calculateDynamicLotEstimate(pricing, lotId, densityId, []);
-    const lotObj = pricing.lotSizes.find((l) => l.id === lotId);
-    const denObj = pricing.densities.find((d) => d.id === densityId);
+    const denObj = pricing.densities.find((d) => d.id === densityId) ?? pricing.densities[1] ?? pricing.densities[0];
+
+    let areaLabelEs = '1 Acre';
+    let areaLabelEn = '1 Acre';
+    let estMin = 0;
+    let estMax = 0;
+    let hasBulk = false;
+
+    const matchingLot =
+      customAcres !== null
+        ? pricing.lotSizes.find((l) => !l.isFivePlus && Math.abs(l.acres - customAcres!) < 0.01)
+        : pricing.lotSizes.find((l) => l.id === '1.00') ?? pricing.lotSizes[0];
+
+    if (matchingLot && (customAcres === null || customAcres < 5)) {
+      const est = calculateDynamicLotEstimate(pricing, matchingLot.id, densityId, []);
+      areaLabelEs = matchingLot.labelEs;
+      areaLabelEn = matchingLot.labelEn;
+      estMin = est.totalMin;
+      estMax = est.totalMax;
+      hasBulk = est.hasBulkDiscount;
+    } else if (customAcres !== null) {
+      const rawMin = Math.round(denObj.perAcreRange[0] * customAcres);
+      const rawMax = Math.round(denObj.perAcreRange[1] * customAcres);
+      hasBulk = customAcres >= 5 && pricing.bulkDiscountRate > 0;
+      const factor = hasBulk ? 1 - pricing.bulkDiscountRate : 1;
+      estMin = Math.max(pricing.minimumMobilizationFee, Math.round(rawMin * factor));
+      estMax = Math.max(estMin, Math.round(rawMax * factor));
+      const formattedAcres = Number.isInteger(customAcres) ? String(customAcres) : customAcres.toString();
+      areaLabelEs = `${formattedAcres} Acres`;
+      areaLabelEn = `${formattedAcres} Acres`;
+    } else {
+      const est = calculateDynamicLotEstimate(pricing, '1.00', densityId, []);
+      estMin = est.totalMin;
+      estMax = est.totalMax;
+      hasBulk = est.hasBulkDiscount;
+    }
+
+    const addonsListEs = pricing.addons
+      .map((a) => `${a.labelEs} (+$${a.price.toLocaleString()})`)
+      .join(', ');
+    const addonsListEn = pricing.addons
+      .map((a) => `${a.labelEn} (+$${a.price.toLocaleString()})`)
+      .join(', ');
+
+    const bulkNoteEs = hasBulk
+      ? ` (incluye ${discountPct}% de descuento por volumen en 5+ acres)`
+      : ` (tarifa mínima de movilización $${pricing.minimumMobilizationFee.toLocaleString()}, y lotes de 5+ acres reciben ${discountPct}% de descuento)`;
+    const bulkNoteEn = hasBulk
+      ? ` (includes ${discountPct}% bulk discount for 5+ acres)`
+      : ` ($${pricing.minimumMobilizationFee.toLocaleString()} minimum mobilization applies, and 5+ acres get ${discountPct}% off)`;
 
     return isEs
-      ? `¡Hola! Soy ${biz.assistantName} de ${biz.businessName}. Para ${lotObj?.labelEs ?? '1.0 Acre'} con ${denObj?.labelEs ?? 'sotobosque medio'}, el rango estimado preliminar es de $${est.totalMin.toLocaleString()} – $${est.totalMax.toLocaleString()} USD (tarifa mínima de movilización $${pricing.minimumMobilizationFee}, y lotes de 5+ acres reciben ${Math.round(pricing.bulkDiscountRate * 100)}% de descuento). Adicionales: tocones +$450, retiro de troncos +$750, acceso vehicular +$650. Llámanos al ${biz.phone} para confirmar gratis en sitio.`
-      : `Hi! I'm ${biz.assistantName} with ${biz.businessName}. For ${lotObj?.labelEn ?? '1.0 Acre'} of ${denObj?.labelEn ?? 'medium brush'}, a preliminary ballpark estimate is $${est.totalMin.toLocaleString()} – $${est.totalMax.toLocaleString()} (our $${pricing.minimumMobilizationFee} minimum mobilization applies, and 5+ acres include a ${Math.round(pricing.bulkDiscountRate * 100)}% bulk discount). Optional add-ons: stump grinding +$450, timber haul-off +$750, driveway cut-in +$650. Call ${biz.phone} to lock a firm free on-site quote!`;
+      ? `${introEs}Para ${areaLabelEs} con ${denObj.labelEs}, el estimado preliminar es de $${estMin.toLocaleString()} – $${estMax.toLocaleString()} USD${bulkNoteEs}.\n\nOpcionales: ${addonsListEs}.\nTambién puedes ajustar estos valores en el Cotizador de la página o llamarnos al ${biz.phone} para confirmar sin costo en sitio.`
+      : `${introEn}For ${areaLabelEn} of ${denObj.labelEn}, a preliminary estimate is $${estMin.toLocaleString()} – $${estMax.toLocaleString()} USD${bulkNoteEn}.\n\nOptional add-ons: ${addonsListEn}.\nYou can also fine-tune this in our on-page Lot Estimator or call ${biz.phone} for a free on-site walkthrough.`;
   }
 
   if (asksHoursOrAddress) {
     return isEs
-      ? `¡Hola! Soy ${biz.assistantName} de ${biz.businessName} (operado por ${biz.ownerName}). Estamos en 1680 Duval Pond Rd, ${biz.cityState} (Tel: ${biz.phone}). Horario: Lun, Mié–Vie 9 AM–5 PM, Mar 12–5 PM (Sáb–Dom cerrado). Cubrimos ${biz.serviceArea}.`
-      : `Hi! I'm ${biz.assistantName} with ${biz.businessName} (led by ${biz.ownerName}). We're located at 1680 Duval Pond Rd, ${biz.cityState} — phone ${biz.phone}. Hours: Mon, Wed–Fri 9 AM–5 PM, Tue 12–5 PM (Closed Sat–Sun). We serve ${biz.serviceArea}.`;
+      ? `${introEs}Operamos desde ${biz.cityState} bajo la dirección de ${biz.ownerName} (Tel: ${biz.phone}).\nHorario: ${biz.operatingHours.es}.\nÁrea de servicio: ${biz.serviceArea}.`
+      : `${introEn}We are based at ${biz.cityState}, led by ${biz.ownerName} (Phone: ${biz.phone}).\nHours: ${biz.operatingHours.en}.\nService area: ${biz.serviceArea}.`;
   }
 
   return isEs
-    ? `¡Hola! Soy ${biz.assistantName} de ${biz.businessName} en 1680 Duval Pond Rd, ${biz.cityState} (${biz.phone}). Cubrimos ${biz.serviceArea} con tarifa mínima de $${pricing.minimumMobilizationFee} y 15% de descuento en 5+ acres. Pregúntame por precios según tus acres, horarios o usa el cotizador de la página.`
-    : `Hi! I'm ${biz.assistantName} with ${biz.businessName} at 1680 Duval Pond Rd, ${biz.cityState} (${biz.phone}). We serve ${biz.serviceArea} with a $${pricing.minimumMobilizationFee} minimum mobilization and 15% off 5+ acres. Ask me about acreage pricing, hours, or use our instant estimator on the page!`;
+    ? `${introEs}Estamos en ${biz.cityState} (${biz.phone}) y cubrimos ${biz.serviceArea}. Trabajamos con tarifa mínima de $${pricing.minimumMobilizationFee.toLocaleString()} y ${discountPct}% de descuento en 5+ acres. Pregúntame por el tamaño de tu terreno (ej. "2.5 acres"), servicios, horarios o cómo agendar tu evaluación gratuita.`
+    : `${introEn}We're located at ${biz.cityState} (${biz.phone}) serving ${biz.serviceArea}. Our minimum mobilization is $${pricing.minimumMobilizationFee.toLocaleString()} with ${discountPct}% off 5+ acres. Ask me about pricing for your acreage (e.g. "2.5 acres"), services, hours, or how to book a free site visit!`;
 }
 
 export function AiReceptionistWidget() {
@@ -403,7 +488,7 @@ export function AiReceptionistWidget() {
 
     try {
       if (isStaticPagesHost()) {
-        const offlineReply = buildOfflineJessicaReply(trimmed, cms, language);
+        const offlineReply = buildOfflineJessicaReply(trimmed, cms, language, messages.length === 0);
         setMessages((prev) =>
           prev.map((m) =>
             m.id === modelMsgId
@@ -428,7 +513,7 @@ export function AiReceptionistWidget() {
 
       const contentType = response.headers.get('content-type') || '';
       if (!response.ok && (response.status === 404 || !contentType.includes('application/json') && !contentType.includes('text/event-stream'))) {
-        const offlineReply = buildOfflineJessicaReply(trimmed, cms, language);
+        const offlineReply = buildOfflineJessicaReply(trimmed, cms, language, messages.length === 0);
         setMessages((prev) =>
           prev.map((m) =>
             m.id === modelMsgId
