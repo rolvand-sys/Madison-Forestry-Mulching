@@ -768,11 +768,18 @@ function resolveOfflineJessicaResponse(
     }
   }
 
+  const prevDate = draft.date;
+  const prevSlot = draft.timeSlot;
+  const prevName = draft.clientName;
+  const prevPhone = draft.clientPhone;
+  const prevAddr = draft.propertyAddress;
+  const prevLot = draft.lotSize;
+
   // Strip phone labels & numbers cleanly before inspecting name / address
   const cleanContactText = raw
     .replace(/\b\d{4}-\d{2}-\d{2}\b/g, ' ')
     .replace(
-      /(?:(?:mi|my)\s+)?(?:tel[eé]fono|phone(?:\s+number)?|cel(?:ular)?|n[uú]mero)(?:\s+(?:es|is|:))?\s*(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/gi,
+      /(?:(?:mi|my)\s+)?(?:tel[eé]f[oó][nm]o|phone(?:\s+number)?|cel(?:ular)?|n[uú]mero)(?:\s+(?:es|is|:))?\s*(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/gi,
       ' '
     )
     .replace(/(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g, ' ')
@@ -802,7 +809,7 @@ function resolveOfflineJessicaResponse(
   if (explicitAddrMatch?.[1]) {
     const cleanedAddr = explicitAddrMatch[1]
       .replace(
-        /(?:\s+(?:y|and))?\s*(?:(?:mi|my)\s+)?(?:nombre|name|tel[eé]fono|phone|acres?)(?:\s+(?:es|is|:)).*$/i,
+        /(?:\s+(?:y|and))?\s*(?:(?:mi|my)\s+)?(?:nombre|name|tel[eé]f[oó][nm]o|phone|acres?)(?:\s+(?:es|is|:)).*$/i,
         ''
       )
       .replace(/^[,\s:.-]+|[,\s;.-]+$/g, '')
@@ -971,15 +978,62 @@ function resolveOfflineJessicaResponse(
       ? 'address'
       : 'lotSize';
 
+    const newlyAddedSlot = (!prevDate || !prevSlot) && Boolean(workingDraft.date && workingDraft.timeSlot);
+    const newlyAddedName = !prevName && Boolean(workingDraft.clientName);
+    const newlyAddedPhone = !prevPhone && Boolean(workingDraft.clientPhone);
+    const newlyAddedAddr = !prevAddr && Boolean(workingDraft.propertyAddress);
+    const newlyAddedLot = !prevLot && Boolean(workingDraft.lotSize);
+    const newFieldCount = [newlyAddedName, newlyAddedPhone, newlyAddedAddr, newlyAddedLot].filter(Boolean).length;
+
+    const formatJoinedEs = (items: string[]) =>
+      items.length <= 1 ? items[0] ?? '' : `${items.slice(0, -1).join(', ')} y ${items[items.length - 1]}`;
+    const formatJoinedEn = (items: string[]) =>
+      items.length <= 1 ? items[0] ?? '' : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+
+    let ackBubble: string;
+    if (newlyAddedSlot) {
+      ackBubble = isEs
+        ? `Anotado: ${dateHuman} a las ${slotHuman}.`
+        : `Got it: ${dateHuman} at ${slotHuman}.`;
+    } else if (newFieldCount > 1) {
+      ackBubble = isEs
+        ? `¡Perfecto${workingDraft.clientName ? `, ${workingDraft.clientName}` : ''}, ya anoté esos datos!`
+        : `Perfect${workingDraft.clientName ? `, ${workingDraft.clientName}` : ''}, got those details!`;
+    } else if (newlyAddedName) {
+      ackBubble = isEs
+        ? `¡Gracias, ${workingDraft.clientName}!`
+        : `Thanks, ${workingDraft.clientName}!`;
+    } else if (newlyAddedPhone) {
+      ackBubble = isEs ? `¡Perfecto, teléfono anotado!` : `Got your phone number, thanks!`;
+    } else if (newlyAddedAddr) {
+      ackBubble = isEs ? `¡Genial, dirección anotada!` : `Great, got your property address!`;
+    } else if (newlyAddedLot) {
+      ackBubble = isEs
+        ? `Anotado: ${workingDraft.lotSize}.`
+        : `Got it: ${workingDraft.lotSize}.`;
+    } else {
+      ackBubble = isEs
+        ? `Para dejar lista tu visita del ${dateHuman} a las ${slotHuman}:`
+        : `To finish booking ${dateHuman} at ${slotHuman}:`;
+    }
+
+    let askBubble: string;
+    if (missingEs.length === 1) {
+      askBubble = isEs
+        ? `Por último, ¿cuál es tu ${missingEs[0]}?`
+        : `Lastly, what's your ${missingEn[0]}?`;
+    } else if (!newlyAddedSlot && prevDate && prevSlot) {
+      askBubble = isEs
+        ? `Ahora solo dime tu ${formatJoinedEs(missingEs)}.`
+        : `Now I just need your ${formatJoinedEn(missingEn)}.`;
+    } else {
+      askBubble = isEs
+        ? `Para dejar la cita registrada en la agenda de ${biz.ownerName}, solo dime tu ${formatJoinedEs(missingEs)}.`
+        : `To save this in ${biz.ownerName}'s agenda, please share your ${formatJoinedEn(missingEn)}.`;
+    }
+
     return {
-      bubbles: [
-        isEs
-          ? `Anotado: ${dateHuman} a las ${slotHuman}.`
-          : `Got it: ${dateHuman} at ${slotHuman}.`,
-        isEs
-          ? `Para dejar la cita registrada en la agenda de ${biz.ownerName}, solo dime tu ${missingEs.join(', ')}.`
-          : `To save this in ${biz.ownerName}'s agenda, please share your ${missingEn.join(', ')}.`,
-      ],
+      bubbles: [ackBubble, askBubble],
       nextDraft: { ...workingDraft, awaitingField: nextAwait },
     };
   }
@@ -1060,7 +1114,16 @@ export function AiReceptionistWidget() {
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const chatSessionRef = useRef(0);
+  const deliveryTokenRef = useRef(0);
   const bookingDraftRef = useRef<BookingDraftState>({ active: false });
+  const messagesRef = useRef<ChatMessage[]>([]);
+  const pendingBatchRef = useRef<Array<{ text: string; speak: boolean }>>([]);
+  const batchTimerRef = useRef<number | null>(null);
+  const batchCreatedAtRef = useRef<number>(0);
+  const lastTypingActivityRef = useRef<number>(0);
+  const inputValueRef = useRef<string>('');
+  const isListeningRef = useRef<boolean>(false);
+  const isProcessingRef = useRef<boolean>(false);
 
   const uiCopy = useMemo(
     () =>
@@ -1155,12 +1218,22 @@ export function AiReceptionistWidget() {
   );
 
   useEffect(() => {
+    messagesRef.current = messages;
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isOpen, isTyping, interimTranscript]);
 
   useEffect(() => {
+    isListeningRef.current = isListening;
+  }, [isListening]);
+
+  useEffect(() => {
     return () => {
       chatSessionRef.current += 1;
+      deliveryTokenRef.current += 1;
+      if (batchTimerRef.current !== null) {
+        window.clearTimeout(batchTimerRef.current);
+        batchTimerRef.current = null;
+      }
       if (recognitionRef.current) {
         try {
           recognitionRef.current.stop();
@@ -1214,18 +1287,19 @@ export function AiReceptionistWidget() {
   const deliverSequencedBubbles = async (
     bubbles: string[],
     sessionId: number,
+    deliveryToken: number,
     speakResponse: boolean,
     bookedAppointment?: Appointment
   ) => {
     for (let i = 0; i < bubbles.length; i++) {
-      if (chatSessionRef.current !== sessionId) return;
+      if (chatSessionRef.current !== sessionId || deliveryTokenRef.current !== deliveryToken) return;
       if (i > 0) {
         await waitChatPause(INTER_BUBBLE_BEAT_MS);
-        if (chatSessionRef.current !== sessionId) return;
+        if (chatSessionRef.current !== sessionId || deliveryTokenRef.current !== deliveryToken) return;
       }
       setIsTyping(true);
       await waitChatPause(calcTypingDelayMs(bubbles[i], i === 0));
-      if (chatSessionRef.current !== sessionId) return;
+      if (chatSessionRef.current !== sessionId || deliveryTokenRef.current !== deliveryToken) return;
       setIsTyping(false);
       const isLast = i === bubbles.length - 1;
       setMessages((prev) => [
@@ -1240,34 +1314,33 @@ export function AiReceptionistWidget() {
       ]);
     }
 
-    if (speakResponse && bubbles.length > 0 && chatSessionRef.current === sessionId) {
+    if (
+      speakResponse &&
+      bubbles.length > 0 &&
+      chatSessionRef.current === sessionId &&
+      deliveryTokenRef.current === deliveryToken
+    ) {
       speakText(bubbles.join(' '));
     }
   };
 
-  const sendMessage = async (textToSend: string, speakResponse = false) => {
-    const trimmed = textToSend.trim();
-    if (!trimmed || isSending) return;
+  const processPendingBatch = async () => {
+    const batch = pendingBatchRef.current.splice(0);
+    if (batch.length === 0) return;
 
+    const combinedText = batch.map((b) => b.text).join('\n');
+    const speakResponse = batch.some((b) => b.speak);
     const sessionId = chatSessionRef.current;
-    const isFirstTurn = messages.length === 0;
+    const deliveryToken = ++deliveryTokenRef.current;
+    const currentMsgs = messagesRef.current;
+    const isFirstTurn = !currentMsgs.some((m) => m.role === 'model');
 
-    setErrorBanner('');
-    stopSpeaking();
-
-    const userMsg: ChatMessage = {
-      id: `u-${Date.now()}`,
-      role: 'user',
-      text: trimmed,
-    };
-
-    const historyForApi = [...messages, userMsg].map((m) => ({
+    const historyForApi = currentMsgs.map((m) => ({
       role: m.role,
       text: m.text,
     }));
 
-    setMessages((prev) => [...prev, userMsg]);
-    setInputText('');
+    isProcessingRef.current = true;
     setIsSending(true);
     setIsTyping(true);
 
@@ -1276,7 +1349,7 @@ export function AiReceptionistWidget() {
     try {
       if (isStaticPagesHost()) {
         const offline = resolveOfflineJessicaResponse(
-          trimmed,
+          combinedText,
           cms,
           language,
           isFirstTurn,
@@ -1286,6 +1359,7 @@ export function AiReceptionistWidget() {
         await deliverSequencedBubbles(
           offline.bubbles,
           sessionId,
+          deliveryToken,
           speakResponse,
           offline.bookedAppointment
         );
@@ -1308,7 +1382,7 @@ export function AiReceptionistWidget() {
           (!contentType.includes('application/json') && !contentType.includes('text/event-stream')))
       ) {
         const offline = resolveOfflineJessicaResponse(
-          trimmed,
+          combinedText,
           cms,
           language,
           isFirstTurn,
@@ -1318,6 +1392,7 @@ export function AiReceptionistWidget() {
         await deliverSequencedBubbles(
           offline.bubbles,
           sessionId,
+          deliveryToken,
           speakResponse,
           offline.bookedAppointment
         );
@@ -1352,7 +1427,7 @@ export function AiReceptionistWidget() {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        if (chatSessionRef.current !== sessionId) return;
+        if (chatSessionRef.current !== sessionId || deliveryTokenRef.current !== deliveryToken) return;
 
         buffer += decoder.decode(value, { stream: true });
         const events = buffer.split('\n\n');
@@ -1446,12 +1521,12 @@ export function AiReceptionistWidget() {
       }
 
       for (let i = 1; i < bubbles.length; i++) {
-        if (chatSessionRef.current !== sessionId) return;
+        if (chatSessionRef.current !== sessionId || deliveryTokenRef.current !== deliveryToken) return;
         await waitChatPause(INTER_BUBBLE_BEAT_MS);
-        if (chatSessionRef.current !== sessionId) return;
+        if (chatSessionRef.current !== sessionId || deliveryTokenRef.current !== deliveryToken) return;
         setIsTyping(true);
         await waitChatPause(calcTypingDelayMs(bubbles[i], false));
-        if (chatSessionRef.current !== sessionId) return;
+        if (chatSessionRef.current !== sessionId || deliveryTokenRef.current !== deliveryToken) return;
         setIsTyping(false);
         const isLast = i === bubbles.length - 1;
         setMessages((prev) => [
@@ -1466,7 +1541,12 @@ export function AiReceptionistWidget() {
         ]);
       }
 
-      if (speakResponse && bubbles.length > 0 && chatSessionRef.current === sessionId) {
+      if (
+        speakResponse &&
+        bubbles.length > 0 &&
+        chatSessionRef.current === sessionId &&
+        deliveryTokenRef.current === deliveryToken
+      ) {
         speakText(bubbles.join(' '));
       }
     } catch (err) {
@@ -1476,16 +1556,78 @@ export function AiReceptionistWidget() {
         setMessages((prev) => prev.filter((m) => m.id !== activeModelMsgId));
       }
     } finally {
-      if (chatSessionRef.current === sessionId) {
+      if (chatSessionRef.current === sessionId && deliveryTokenRef.current === deliveryToken) {
+        isProcessingRef.current = false;
         setIsTyping(false);
         setIsSending(false);
+      }
+      if (pendingBatchRef.current.length > 0 && chatSessionRef.current === sessionId) {
+        scheduleBatchFlush(700);
       }
     }
   };
 
+  const scheduleBatchFlush = (waitMs = 1500) => {
+    if (batchTimerRef.current !== null) {
+      window.clearTimeout(batchTimerRef.current);
+      batchTimerRef.current = null;
+    }
+    const sessionId = chatSessionRef.current;
+    batchTimerRef.current = window.setTimeout(() => {
+      batchTimerRef.current = null;
+      if (chatSessionRef.current !== sessionId) return;
+      if (pendingBatchRef.current.length === 0) return;
+
+      const elapsed = Date.now() - batchCreatedAtRef.current;
+      const msSinceKeystroke = Date.now() - lastTypingActivityRef.current;
+      const isActivelyTypingNext =
+        inputValueRef.current.trim().length > 0 && msSinceKeystroke < 2100 && elapsed < 12000;
+
+      if (isListeningRef.current || isActivelyTypingNext || isProcessingRef.current) {
+        scheduleBatchFlush(750);
+        return;
+      }
+
+      void processPendingBatch();
+    }, waitMs);
+  };
+
+  const enqueueUserMessage = (textToSend: string, speakResponse = false, immediate = false) => {
+    const trimmed = textToSend.trim();
+    if (!trimmed) return;
+
+    // Cancel any pending follow-up bubbles from a previous turn if user jumped back in
+    deliveryTokenRef.current += 1;
+    isProcessingRef.current = false;
+    setIsTyping(false);
+    setIsSending(false);
+    setErrorBanner('');
+    stopSpeaking();
+
+    const userMsg: ChatMessage = {
+      id: `u-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      role: 'user',
+      text: trimmed,
+    };
+
+    const nextMessages = [...messagesRef.current, userMsg];
+    messagesRef.current = nextMessages;
+    setMessages(nextMessages);
+
+    inputValueRef.current = '';
+    setInputText('');
+
+    if (pendingBatchRef.current.length === 0) {
+      batchCreatedAtRef.current = Date.now();
+    }
+    pendingBatchRef.current.push({ text: trimmed, speak: speakResponse });
+
+    scheduleBatchFlush(immediate ? 350 : 1500);
+  };
+
   const handleFormSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    void sendMessage(inputText, false);
+    enqueueUserMessage(inputText, false, false);
   };
 
   const handleToggleVoice = async () => {
@@ -1565,7 +1707,7 @@ export function AiReceptionistWidget() {
       const spoken = finalTranscript.trim();
       setInterimTranscript('');
       if (spoken) {
-        void sendMessage(spoken, true);
+        enqueueUserMessage(spoken, true, false);
       }
     };
 
@@ -1581,12 +1723,21 @@ export function AiReceptionistWidget() {
 
   const handleReset = () => {
     chatSessionRef.current += 1;
+    deliveryTokenRef.current += 1;
+    if (batchTimerRef.current !== null) {
+      window.clearTimeout(batchTimerRef.current);
+      batchTimerRef.current = null;
+    }
+    pendingBatchRef.current = [];
+    isProcessingRef.current = false;
     bookingDraftRef.current = { active: false };
     stopSpeaking();
     setIsTyping(false);
     setIsSending(false);
+    messagesRef.current = [];
     setMessages([]);
     setErrorBanner('');
+    inputValueRef.current = '';
     setInputText('');
   };
 
@@ -1732,7 +1883,7 @@ export function AiReceptionistWidget() {
                   <button
                     key={chip}
                     type="button"
-                    onClick={() => void sendMessage(chip, false)}
+                    onClick={() => enqueueUserMessage(chip, false, true)}
                     className="text-xs font-medium bg-white hover:bg-[var(--cv-primary)] text-[#231710] hover:text-white border border-[#DDD1C0] hover:border-[var(--cv-primary)] px-3 py-1.5 rounded-md transition-colors cursor-pointer text-left"
                   >
                     {chip}
@@ -1923,7 +2074,6 @@ export function AiReceptionistWidget() {
             <button
               type="button"
               onClick={handleToggleVoice}
-              disabled={isSending}
               aria-label={isListening ? uiCopy.voiceStop : uiCopy.voiceStart}
               title={isListening ? uiCopy.voiceStop : uiCopy.voiceStart}
               className={`w-10 h-10 rounded-md flex items-center justify-center shrink-0 transition-colors cursor-pointer ${
@@ -1938,15 +2088,21 @@ export function AiReceptionistWidget() {
             <input
               type="text"
               value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
+              onChange={(e) => {
+                const nextVal = e.target.value;
+                inputValueRef.current = nextVal;
+                if (nextVal.trim().length > 0) {
+                  lastTypingActivityRef.current = Date.now();
+                }
+                setInputText(nextVal);
+              }}
               placeholder={uiCopy.placeholder}
-              disabled={isSending}
               className="flex-1 min-w-0 bg-[#F4EFE6] border border-[#DDD1C0] focus:border-[var(--cv-primary)] focus:outline-none rounded-md px-3 py-2 text-sm text-[#231710] placeholder:text-neutral-500"
             />
 
             <button
               type="submit"
-              disabled={isSending || !inputText.trim()}
+              disabled={!inputText.trim()}
               aria-label={uiCopy.sendLabel}
               className="w-10 h-10 rounded-md bg-[var(--cv-primary)] hover:bg-[var(--cv-primary-dark)] disabled:opacity-40 text-white flex items-center justify-center shrink-0 transition-colors cursor-pointer"
             >

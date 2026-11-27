@@ -226,6 +226,7 @@ function buildSystemInstruction(uiLanguage: 'en' | 'es'): string {
     '  4. Phone Number',
     '  5. Property Address / Parcel or City/County (e.g., Madison, Monticello, Perry, Live Oak, Quitman GA)',
     '  6. Approximate Lot Size / Acreage',
+    '- NEVER repeat the same opening confirmation (e.g., do NOT keep repeating the chosen date/time or "To save this in Paul Brown\'s agenda...") on consecutive turns while collecting missing details. Briefly acknowledge ONLY what the customer just sent (e.g., "¡Gracias, Rafael!" or "Perfecto, teléfono anotado"), and ask naturally for only the remaining piece(s).',
     '- NEVER tell a customer their visit is scheduled unless `book_site_visit` returns `{ ok: true }`. If a requested slot is full, present the open alternative slots returned by the tool.',
     `- Once \`book_site_visit\` succeeds, share their Reference ID and let them know they can download the calendar reminder (.ics) directly from the confirmation card below your message (or call ${biz.phone} if urgent).`,
     cms.sections.assistant.extraInstructions
